@@ -1,0 +1,20 @@
+package = "backend"
+namespace = "app.api"
+require = ["mod.auth"]
+
+[schema.User]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", name = "string"}
+
+[func.createUser]
+intent = "Create new user"
+input = ["schema.User"]
+output = ["schema.User"]
+
+[mod.user_api]
+purpose = "User management API"
+schemas = ["schema.User"]
+funcs = ["func.createUser"]
+pipeline = ["func.createUser"]
+boundary = {http = ["POST /users"]}

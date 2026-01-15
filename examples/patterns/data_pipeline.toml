@@ -1,0 +1,85 @@
+# Pattern: Data Pipeline (ETL)
+# Use case: Web analytics data processing pipeline
+# Reference: PATTERN_CATALOG.md - Pattern 4
+
+[schema.RawClickEvent]
+kind = "node"
+role = "input"
+fields = {raw_log = "string", received_at = "timestamp", source_ip = "string"}
+
+[schema.ParsedClickEvent]
+kind = "node"
+role = "intermediate"
+fields = {event_id = "uuid", user_id = "uuid", session_id = "uuid", url = "string", timestamp = "timestamp", user_agent = "string", referrer = "string"}
+
+[schema.EnrichedClickEvent]
+kind = "node"
+role = "intermediate"
+fields = {event_id = "uuid", user_id = "uuid", session_id = "uuid", url = "string", timestamp = "timestamp", user_agent = "string", referrer = "string", device_type = "string", browser = "string", os = "string", country = "string", city = "string", page_category = "string"}
+
+[schema.SessionAggregation]
+kind = "node"
+role = "intermediate"
+fields = {session_id = "uuid", user_id = "uuid", start_time = "timestamp", end_time = "timestamp", page_views = "int", unique_pages = "int", duration_seconds = "int"}
+
+[schema.DailyMetrics]
+kind = "node"
+role = "output"
+fields = {date = "date", total_page_views = "int", unique_users = "int", unique_sessions = "int", avg_session_duration = "float", bounce_rate = "float"}
+
+[schema.ParseError]
+kind = "node"
+role = "error"
+fields = {raw_data = "string", error_message = "string", timestamp = "timestamp"}
+
+[schema.ValidationError]
+kind = "node"
+role = "error"
+fields = {event_id = "uuid", field = "string", error_message = "string"}
+
+[func.ingestClickEvents]
+intent = "Read raw click events from S3"
+input = []
+output = ["schema.RawClickEvent"]
+
+[func.parseClickEvent]
+intent = "Parse raw log string into structured event"
+input = ["schema.RawClickEvent"]
+output = ["schema.ParsedClickEvent", "schema.ParseError"]
+
+[func.validateEvent]
+intent = "Validate parsed event for required fields and data quality"
+input = ["schema.ParsedClickEvent"]
+output = ["schema.ParsedClickEvent", "schema.ValidationError"]
+
+[func.enrichWithGeoData]
+intent = "Enrich event with geographic data from IP address"
+input = ["schema.ParsedClickEvent"]
+output = ["schema.EnrichedClickEvent"]
+
+[func.enrichWithDeviceInfo]
+intent = "Enrich event with device, browser, and OS from user agent"
+input = ["schema.EnrichedClickEvent"]
+output = ["schema.EnrichedClickEvent"]
+
+[func.aggregateSessionMetrics]
+intent = "Aggregate events by session"
+input = ["schema.EnrichedClickEvent"]
+output = ["schema.SessionAggregation"]
+
+[func.calculateDailyMetrics]
+intent = "Calculate daily aggregated metrics"
+input = ["schema.SessionAggregation"]
+output = ["schema.DailyMetrics"]
+
+[func.writeDailyMetrics]
+intent = "Write daily metrics to data warehouse"
+input = ["schema.DailyMetrics"]
+output = []
+
+[mod.analytics_pipeline]
+purpose = "ETL pipeline for web analytics data processing"
+schemas = ["schema.RawClickEvent", "schema.ParsedClickEvent", "schema.EnrichedClickEvent", "schema.SessionAggregation", "schema.DailyMetrics", "schema.ParseError", "schema.ValidationError"]
+funcs = ["func.ingestClickEvents", "func.parseClickEvent", "func.validateEvent", "func.enrichWithGeoData", "func.enrichWithDeviceInfo", "func.aggregateSessionMetrics", "func.calculateDailyMetrics", "func.writeDailyMetrics"]
+boundary = {input = ["s3://analytics-raw/clicks"], output = ["redshift://analytics/daily_metrics"]}
+pipeline = ["func.ingestClickEvents", "func.parseClickEvent", "func.validateEvent", "func.enrichWithGeoData", "func.enrichWithDeviceInfo", "func.aggregateSessionMetrics", "func.calculateDailyMetrics", "func.writeDailyMetrics"]

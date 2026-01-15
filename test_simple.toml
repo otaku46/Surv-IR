@@ -1,0 +1,19 @@
+# Very simple test for diff-impl
+
+[schema.TestStruct]
+kind = "node"
+role = "entity"
+fields = {id = "string", name = "string"}
+impl.lang = "rust"
+
+[func.test_function]
+intent = "Test function"
+input = ["schema.TestStruct"]
+output = ["schema.TestStruct"]
+impl.lang = "rust"
+
+[mod.test_mod]
+purpose = "Test module"
+schemas = ["schema.TestStruct"]
+funcs = ["func.test_function"]
+pipeline = ["func.test_function"]

@@ -1,0 +1,19 @@
+# Test file for diff-impl
+
+[schema.TestData]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", name = "string"}
+impl.lang = "rust"
+
+[func.processData]
+intent = "Process test data"
+input = ["schema.TestData"]
+output = ["schema.TestData"]
+impl.lang = "rust"
+
+[mod.test_module]
+purpose = "Test module for diff-impl"
+schemas = ["schema.TestData"]
+funcs = ["func.processData"]
+pipeline = ["func.processData"]

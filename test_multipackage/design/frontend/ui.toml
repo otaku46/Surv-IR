@@ -1,0 +1,19 @@
+package = "frontend"
+namespace = "app.ui"
+require = ["mod.user_api"]
+
+[schema.UserView]
+kind = "node"
+role = "view"
+fields = {user_id = "uuid", display_name = "string"}
+
+[func.renderUserList]
+intent = "Render user list UI"
+input = ["schema.UserView"]
+output = ["schema.UI"]
+
+[mod.user_ui]
+purpose = "User UI components"
+schemas = ["schema.UserView"]
+funcs = ["func.renderUserList"]
+pipeline = ["func.renderUserList"]

@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deploy Pipeline Visualization</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            overflow: hidden;
+        }
+
+        #graph {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .node {
+            cursor: pointer;
+            stroke: #fff;
+            stroke-width: 2px;
+        }
+
+        .node.production {
+            fill: #ff6b6b;
+        }
+
+        .node.staging {
+            fill: #ffd43b;
+        }
+
+        .node.default {
+            fill: #4ecdc4;
+        }
+
+        .node:hover {
+            stroke-width: 3px;
+            filter: brightness(1.2);
+        }
+
+        .node.selected {
+            stroke: #fff;
+            stroke-width: 4px;
+        }
+
+        .link {
+            stroke: #999;
+            stroke-width: 2px;
+            fill: none;
+            marker-end: url(#arrowhead);
+        }
+
+        .link.highlighted {
+            stroke: #4ecdc4;
+            stroke-width: 3px;
+        }
+
+        .node-label {
+            fill: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            text-anchor: middle;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+
+        #details-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 350px;
+            max-height: calc(100vh - 40px);
+            background: rgba(22, 22, 34, 0.95);
+            border: 1px solid #4ecdc4;
+            border-radius: 8px;
+            padding: 20px;
+            display: none;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+
+        #details-panel h2 {
+            color: #4ecdc4;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-bottom: 2px solid #4ecdc4;
+            padding-bottom: 8px;
+        }
+
+        #details-panel .section {
+            margin: 15px 0;
+        }
+
+        #details-panel .section h3 {
+            color: #ffd43b;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        #details-panel .item {
+            background: rgba(78, 205, 196, 0.1);
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+            font-size: 13px;
+            border-left: 3px solid #4ecdc4;
+        }
+
+        #details-panel .warning {
+            background: rgba(255, 107, 107, 0.1);
+            border-left-color: #ff6b6b;
+        }
+
+        #details-panel .badge {
+            display: inline-block;
+            background: #4ecdc4;
+            color: #1a1a2e;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-right: 5px;
+        }
+
+        #details-panel .badge.prod {
+            background: #ff6b6b;
+            color: #fff;
+        }
+
+        #details-panel .badge.staging {
+            background: #ffd43b;
+            color: #1a1a2e;
+        }
+
+        #controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(22, 22, 34, 0.95);
+            border: 1px solid #4ecdc4;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        }
+
+        #controls h3 {
+            color: #4ecdc4;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        #search {
+            width: 200px;
+            padding: 8px;
+            background: #16161e;
+            border: 1px solid #4ecdc4;
+            border-radius: 4px;
+            color: #eee;
+            font-size: 13px;
+        }
+
+        #legend {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(22, 22, 34, 0.95);
+            border: 1px solid #4ecdc4;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        }
+
+        #legend h3 {
+            color: #4ecdc4;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            margin-right: 10px;
+            border: 1px solid #fff;
+        }
+
+        .close-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: none;
+            border: none;
+            color: #ff6b6b;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 5px;
+        }
+
+        code {
+            background: rgba(78, 205, 196, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <svg id="graph"></svg>
+
+    <div id="controls">
+        <h3>🔍 Search Jobs</h3>
+        <input type="text" id="search" placeholder="Search job names...">
+    </div>
+
+    <div id="legend">
+        <h3>📊 Target Types</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ff6b6b;"></div>
+            <span>Production</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ffd43b;"></div>
+            <span>Staging</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #4ecdc4;"></div>
+            <span>Build/Test</span>
+        </div>
+    </div>
+
+    <div id="details-panel">
+        <button class="close-btn" onclick="closeDetails()">×</button>
+        <div id="details-content"></div>
+    </div>
+
+    <script>
+        const graphData = {
+  "nodes": [
+    {
+      "id": "job.build",
+      "label": "build",
+      "type": "job",
+      "group": "default",
+      "metadata": {
+        "target": null,
+        "target_kind": null,
+        "secrets": [],
+        "permissions": null,
+        "artifacts": [
+          "artifact.webapp_image"
+        ],
+        "side_effects": [],
+        "commands": []
+      }
+    },
+    {
+      "id": "job.deploy_prod",
+      "label": "deploy_prod",
+      "type": "job",
+      "group": "production",
+      "metadata": {
+        "target": "target.prod",
+        "target_kind": "production",
+        "secrets": [
+          "secret.DB_URL",
+          "secret.API_KEY"
+        ],
+        "permissions": "perm.deployer",
+        "artifacts": [],
+        "side_effects": [
+          "release"
+        ],
+        "commands": [
+          "kubectl apply -f k8s/prod/"
+        ]
+      }
+    },
+    {
+      "id": "job.deploy_staging",
+      "label": "deploy_staging",
+      "type": "job",
+      "group": "staging",
+      "metadata": {
+        "target": "target.staging",
+        "target_kind": "staging",
+        "secrets": [
+          "secret.DB_URL"
+        ],
+        "permissions": "perm.deployer",
+        "artifacts": [],
+        "side_effects": [],
+        "commands": [
+          "kubectl apply -f k8s/staging/"
+        ]
+      }
+    },
+    {
+      "id": "job.integration_test",
+      "label": "integration_test",
+      "type": "job",
+      "group": "staging",
+      "metadata": {
+        "target": "target.staging",
+        "target_kind": "staging",
+        "secrets": [],
+        "permissions": null,
+        "artifacts": [],
+        "side_effects": [],
+        "commands": [
+          "npm run test:integration"
+        ]
+      }
+    },
+    {
+      "id": "job.test",
+      "label": "test",
+      "type": "job",
+      "group": "default",
+      "metadata": {
+        "target": null,
+        "target_kind": null,
+        "secrets": [],
+        "permissions": null,
+        "artifacts": [],
+        "side_effects": [],
+        "commands": []
+      }
+    }
+  ],
+  "links": [
+    {
+      "source": "job.integration_test",
+      "target": "job.deploy_prod",
+      "label": "requires",
+      "type": "dependency"
+    },
+    {
+      "source": "job.test",
+      "target": "job.deploy_staging",
+      "label": "requires",
+      "type": "dependency"
+    },
+    {
+      "source": "job.deploy_staging",
+      "target": "job.integration_test",
+      "label": "requires",
+      "type": "dependency"
+    },
+    {
+      "source": "job.build",
+      "target": "job.test",
+      "label": "requires",
+      "type": "dependency"
+    }
+  ],
+  "pipeline": {
+    "name": "webapp-deploy",
+    "description": "Production deployment pipeline for web application"
+  },
+  "targets": [
+    {
+      "name": "prod",
+      "kind": "production",
+      "domain": "example.com"
+    },
+    {
+      "name": "staging",
+      "kind": "staging",
+      "domain": "staging.example.com"
+    }
+  ]
+};
+
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        const svg = d3.select('#graph')
+            .attr('width', width)
+            .attr('height', height);
+
+        // Define arrowhead marker
+        svg.append('defs').append('marker')
+            .attr('id', 'arrowhead')
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 25)
+            .attr('refY', 0)
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M0,-5L10,0L0,5')
+            .attr('fill', '#999');
+
+        const g = svg.append('g');
+
+        // Zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4])
+            .on('zoom', (event) => {
+                g.attr('transform', event.transform);
+            });
+
+        svg.call(zoom);
+
+        // Create force simulation
+        const simulation = d3.forceSimulation(graphData.nodes)
+            .force('link', d3.forceLink(graphData.links)
+                .id(d => d.id)
+                .distance(150))
+            .force('charge', d3.forceManyBody().strength(-500))
+            .force('center', d3.forceCenter(width / 2, height / 2))
+            .force('collision', d3.forceCollide().radius(50));
+
+        // Draw links
+        const link = g.append('g')
+            .selectAll('path')
+            .data(graphData.links)
+            .join('path')
+            .attr('class', 'link');
+
+        // Draw nodes
+        const node = g.append('g')
+            .selectAll('circle')
+            .data(graphData.nodes)
+            .join('circle')
+            .attr('class', d => `node ${d.group}`)
+            .attr('r', 20)
+            .call(drag(simulation))
+            .on('click', showDetails);
+
+        // Draw labels
+        const label = g.append('g')
+            .selectAll('text')
+            .data(graphData.nodes)
+            .join('text')
+            .attr('class', 'node-label')
+            .attr('dy', -25)
+            .text(d => d.label);
+
+        // Update positions on tick
+        simulation.on('tick', () => {
+            link.attr('d', d => {
+                const dx = d.target.x - d.source.x;
+                const dy = d.target.y - d.source.y;
+                return `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`;
+            });
+
+            node
+                .attr('cx', d => d.x)
+                .attr('cy', d => d.y);
+
+            label
+                .attr('x', d => d.x)
+                .attr('y', d => d.y);
+        });
+
+        // Drag behavior
+        function drag(simulation) {
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+
+            return d3.drag()
+                .on('start', dragstarted)
+                .on('drag', dragged)
+                .on('end', dragended);
+        }
+
+        // Show details panel
+        function showDetails(event, d) {
+            const panel = document.getElementById('details-panel');
+            const content = document.getElementById('details-content');
+
+            // Clear previous selection
+            node.classed('selected', false);
+            d3.select(this).classed('selected', true);
+
+            let html = `<h2>${d.label}</h2>`;
+
+            if (d.metadata.target_kind) {
+                const badgeClass = d.metadata.target_kind === 'production' ? 'prod' :
+                                 d.metadata.target_kind === 'staging' ? 'staging' : '';
+                html += `<span class="badge ${badgeClass}">${d.metadata.target_kind}</span>`;
+            }
+
+            if (d.metadata.target) {
+                html += `<div class="section">
+                    <h3>🎯 Target</h3>
+                    <div class="item"><code>${d.metadata.target}</code></div>
+                </div>`;
+            }
+
+            if (d.metadata.commands && d.metadata.commands.length > 0) {
+                html += `<div class="section"><h3>⚙️ Commands</h3>`;
+                d.metadata.commands.forEach(cmd => {
+                    html += `<div class="item"><code>${cmd}</code></div>`;
+                });
+                html += `</div>`;
+            }
+
+            if (d.metadata.secrets && d.metadata.secrets.length > 0) {
+                html += `<div class="section"><h3>🔐 Secrets</h3>`;
+                d.metadata.secrets.forEach(s => {
+                    html += `<div class="item">${s}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            if (d.metadata.artifacts && d.metadata.artifacts.length > 0) {
+                html += `<div class="section"><h3>📦 Produces</h3>`;
+                d.metadata.artifacts.forEach(a => {
+                    html += `<div class="item">${a}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            if (d.metadata.side_effects && d.metadata.side_effects.length > 0) {
+                html += `<div class="section"><h3>⚠️ Side Effects</h3>`;
+                d.metadata.side_effects.forEach(se => {
+                    html += `<div class="item warning">${se}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            if (d.metadata.permissions) {
+                html += `<div class="section">
+                    <h3>🔑 Permissions</h3>
+                    <div class="item">${d.metadata.permissions}</div>
+                </div>`;
+            }
+
+            // Show dependencies
+            const deps = graphData.links.filter(l => l.target.id === d.id);
+            if (deps.length > 0) {
+                html += `<div class="section"><h3>⬅️ Depends On</h3>`;
+                deps.forEach(dep => {
+                    const source = graphData.nodes.find(n => n.id === dep.source.id);
+                    html += `<div class="item">${source.label}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            const dependents = graphData.links.filter(l => l.source.id === d.id);
+            if (dependents.length > 0) {
+                html += `<div class="section"><h3>➡️ Required By</h3>`;
+                dependents.forEach(dep => {
+                    const target = graphData.nodes.find(n => n.id === dep.target.id);
+                    html += `<div class="item">${target.label}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            content.innerHTML = html;
+            panel.style.display = 'block';
+
+            // Highlight related nodes
+            link.classed('highlighted', l => l.source.id === d.id || l.target.id === d.id);
+        }
+
+        function closeDetails() {
+            document.getElementById('details-panel').style.display = 'none';
+            node.classed('selected', false);
+            link.classed('highlighted', false);
+        }
+
+        // Search functionality
+        document.getElementById('search').addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            node.style('opacity', d => {
+                if (!query) return 1;
+                return d.label.toLowerCase().includes(query) ? 1 : 0.2;
+            });
+            label.style('opacity', d => {
+                if (!query) return 1;
+                return d.label.toLowerCase().includes(query) ? 1 : 0.2;
+            });
+        });
+
+        // Click outside to close
+        svg.on('click', (event) => {
+            if (event.target === event.currentTarget) {
+                closeDetails();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+[package]
+name = "survibe-parser-rs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "surc"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+walkdir = "2.5"
+chrono = "0.4"
+regex = "1.10"
+lsp-types = "0.95"
+which = "4.4"

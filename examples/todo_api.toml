@@ -1,0 +1,111 @@
+# Simple Todo List API
+# Pattern: REST API (inspired by examples/patterns/rest_api.toml)
+
+# ============================================================================
+# SCHEMAS: Domain Entities
+# ============================================================================
+
+[schema.Todo]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", title = "string", description = "string", completed = "bool", created_at = "timestamp"}
+
+# ============================================================================
+# SCHEMAS: Request/Response
+# ============================================================================
+
+[schema.CreateTodoRequest]
+kind = "node"
+role = "request"
+fields = {title = "string", description = "string"}
+
+[schema.UpdateTodoRequest]
+kind = "node"
+role = "request"
+fields = {id = "uuid", title = "string?", description = "string?", completed = "bool?"}
+
+[schema.TodoResponse]
+kind = "node"
+role = "response"
+fields = {todo = "Todo", timestamp = "timestamp"}
+
+[schema.TodoListResponse]
+kind = "node"
+role = "response"
+fields = {todos = "[Todo]", count = "int"}
+
+# ============================================================================
+# SCHEMAS: Errors
+# ============================================================================
+
+[schema.ValidationError]
+kind = "node"
+role = "error"
+fields = {message = "string", field = "string"}
+
+[schema.NotFoundError]
+kind = "node"
+role = "error"
+fields = {message = "string", id = "uuid"}
+
+# ============================================================================
+# FUNCTIONS
+# ============================================================================
+
+[func.validateCreateRequest]
+intent = "Validate create todo request"
+input = ["schema.CreateTodoRequest"]
+output = ["schema.CreateTodoRequest", "schema.ValidationError"]
+
+[func.createTodo]
+intent = "Create new todo item"
+input = ["schema.CreateTodoRequest"]
+output = ["schema.Todo"]
+
+[func.getTodo]
+intent = "Get todo by ID"
+input = ["schema.Todo"]
+output = ["schema.Todo", "schema.NotFoundError"]
+
+[func.updateTodo]
+intent = "Update existing todo"
+input = ["schema.UpdateTodoRequest"]
+output = ["schema.Todo", "schema.NotFoundError"]
+
+[func.deleteTodo]
+intent = "Delete todo by ID"
+input = ["schema.Todo"]
+output = ["schema.Todo", "schema.NotFoundError"]
+
+[func.listTodos]
+intent = "List all todos"
+input = []
+output = ["schema.TodoListResponse"]
+
+[func.serializeResponse]
+intent = "Convert todo to JSON response"
+input = ["schema.Todo"]
+output = ["schema.TodoResponse"]
+
+# ============================================================================
+# MODULE: Todo API
+# ============================================================================
+
+[mod.todo_api]
+purpose = "Simple REST API for managing todos"
+schemas = ["schema.Todo", "schema.CreateTodoRequest", "schema.UpdateTodoRequest", "schema.TodoResponse", "schema.TodoListResponse", "schema.ValidationError", "schema.NotFoundError"]
+funcs = ["func.validateCreateRequest", "func.createTodo", "func.getTodo", "func.updateTodo", "func.deleteTodo", "func.listTodos", "func.serializeResponse"]
+boundary = {http = ["GET /todos", "GET /todos/:id", "POST /todos", "PUT /todos/:id", "DELETE /todos/:id"]}
+pipeline = ["func.validateCreateRequest", "func.createTodo", "func.serializeResponse"]
+
+# ============================================================================
+# IMPLEMENTATION STATUS
+# ============================================================================
+
+[status]
+updated_at = "2026-01-14"
+
+[status.mod.todo_api]
+state = "partial"
+coverage = 0.6
+notes = "create/get done"

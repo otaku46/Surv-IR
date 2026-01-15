@@ -1,0 +1,50 @@
+# Plasm IDE design subset for testing diff-impl
+package = "plasm"
+namespace = "ide"
+
+# Test schemas that should exist
+[schema.WorkspaceState]
+kind = "node"
+role = "data"
+fields = {root = "string", file_tree = "FileTreeNode"}
+impl.lang = "ts"
+impl.bind = "WorkspaceState"
+
+[schema.FileTreeNode]
+kind = "node"
+role = "data"
+fields = {path = "string", kind = "file|dir"}
+impl.lang = "both"  # Both Rust and TypeScript
+
+[schema.EditorState]
+kind = "node"
+role = "data"
+fields = {active_path = "string?"}
+impl.lang = "ts"
+
+[schema.ChatState]
+kind = "node"
+role = "data"
+fields = {session_id = "string"}
+impl.lang = "ts"
+
+# Test function that exists in Rust
+[func.list_workspace_tree]
+intent = "Tauri command: list workspace files as a tree"
+input = ["schema.WorkspaceState"]
+output = ["schema.FileTreeNode"]
+impl.lang = "rust"
+impl.bind = "list_workspace_tree"
+
+# Test function that might not exist
+[func.nonexistent_function]
+intent = "This should be reported as missing"
+input = ["schema.WorkspaceState"]
+output = ["schema.WorkspaceState"]
+impl.lang = "rust"
+
+[mod.workspace_ui]
+purpose = "Workspace pane functionality"
+schemas = ["schema.WorkspaceState", "schema.FileTreeNode"]
+funcs = ["func.list_workspace_tree"]
+pipeline = ["func.list_workspace_tree"]

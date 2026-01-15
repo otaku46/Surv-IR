@@ -1,0 +1,19 @@
+[project]
+name = "test_multipackage"
+
+[paths]
+ir_root = "design"
+
+[packages.frontend]
+root = "design/frontend"
+namespace = "app.ui"
+depends = ["backend"]
+
+[packages.backend]
+root = "design/backend"
+namespace = "app.api"
+depends = ["common"]
+
+[packages.common]
+root = "design/common"
+namespace = "app.common"

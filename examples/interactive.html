@@ -1,0 +1,896 @@
+   Compiling survibe-parser-rs v0.1.0 (/Users/masatakashioji/Prog/surv/surc)
+warning: unused import: `BTreeMap`
+ --> src/export/html.rs:4:24
+  |
+4 | use std::collections::{BTreeMap, HashMap};
+  |                        ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: `survibe-parser-rs` (lib) generated 1 warning (run `cargo fix --lib -p survibe-parser-rs` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 2.37s
+     Running `target/release/surc export html examples/surv.toml`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Surv IR Interactive Visualization</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+
+        #sidebar {
+            width: 300px;
+            background: #252525;
+            border-right: 1px solid #444;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        #graph {
+            flex: 1;
+            position: relative;
+        }
+
+        h1 {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 8px 12px;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #e0e0e0;
+            margin-bottom: 15px;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+
+        .filter-group {
+            margin-bottom: 20px;
+        }
+
+        .filter-group h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #999;
+            margin-bottom: 10px;
+        }
+
+        .filter-option {
+            display: flex;
+            align-items: center;
+            padding: 6px 0;
+            cursor: pointer;
+        }
+
+        .filter-option input {
+            margin-right: 8px;
+        }
+
+        .filter-option label {
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .color-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+
+        .controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #e0e0e0;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #444;
+        }
+
+        .detail-panel {
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            width: 350px;
+            max-height: 80vh;
+            background: #252525;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            overflow-y: auto;
+            display: none;
+            z-index: 100;
+        }
+
+        .detail-panel.active {
+            display: block;
+        }
+
+        .detail-panel h2 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #4a9eff;
+        }
+
+        .detail-panel .close-btn {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: none;
+            border: none;
+            color: #999;
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        .detail-section {
+            margin-bottom: 15px;
+        }
+
+        .detail-section h4 {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #999;
+            margin-bottom: 6px;
+        }
+
+        .detail-section p {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .detail-list {
+            list-style: none;
+            font-size: 14px;
+        }
+
+        .detail-list li {
+            padding: 4px 0;
+            color: #4a9eff;
+        }
+
+        .field-table {
+            width: 100%;
+            font-size: 13px;
+            border-collapse: collapse;
+        }
+
+        .field-table td {
+            padding: 4px 8px;
+            border-bottom: 1px solid #333;
+        }
+
+        .field-table td:first-child {
+            color: #999;
+            width: 40%;
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .node circle {
+            cursor: pointer;
+            stroke: #fff;
+            stroke-width: 2px;
+        }
+
+        .node text {
+            font-size: 12px;
+            pointer-events: none;
+            text-anchor: middle;
+            fill: #e0e0e0;
+        }
+
+        .link {
+            stroke: #666;
+            stroke-opacity: 0.6;
+            stroke-width: 1.5px;
+            fill: none;
+        }
+
+        .link.highlighted {
+            stroke: #4a9eff;
+            stroke-width: 3px;
+            stroke-opacity: 1;
+        }
+
+        .node.highlighted circle {
+            stroke: #4a9eff;
+            stroke-width: 4px;
+        }
+
+        .node.dimmed {
+            opacity: 0.2;
+        }
+
+        .link.dimmed {
+            opacity: 0.1;
+        }
+
+        .link-label {
+            font-size: 10px;
+            fill: #999;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="sidebar">
+            <h1>Surv IR Visualization</h1>
+
+            <input type="text" class="search-box" id="search" placeholder="Search nodes...">
+
+            <div class="filter-group">
+                <h3>Node Types</h3>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-schema" checked>
+                    <label for="filter-schema">
+                        <span class="color-indicator" style="background: #2980b9;"></span>
+                        Schemas
+                    </label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-func" checked>
+                    <label for="filter-func">
+                        <span class="color-indicator" style="background: #27ae60;"></span>
+                        Functions
+                    </label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-mod" checked>
+                    <label for="filter-mod">
+                        <span class="color-indicator" style="background: #8e44ad;"></span>
+                        Modules
+                    </label>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h3>Schema Types</h3>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-node" checked>
+                    <label for="filter-node">Node</label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-edge" checked>
+                    <label for="filter-edge">Edge</label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-boundary" checked>
+                    <label for="filter-boundary">Boundary</label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="filter-space" checked>
+                    <label for="filter-space">Space</label>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h3>Link Types</h3>
+                <div class="filter-option">
+                    <input type="checkbox" id="link-func" checked>
+                    <label for="link-func">Function I/O</label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="link-mod" checked>
+                    <label for="link-mod">Module Uses</label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="link-require" checked>
+                    <label for="link-require">Module Requires</label>
+                </div>
+                <div class="filter-option">
+                    <input type="checkbox" id="link-schema" checked>
+                    <label for="link-schema">Schema Relations</label>
+                </div>
+            </div>
+        </div>
+
+        <div id="graph">
+            <div class="controls">
+                <button class="btn" id="reset-zoom">Reset View</button>
+                <button class="btn" id="reset-positions">Reset Layout</button>
+            </div>
+
+            <div class="detail-panel" id="detail-panel">
+                <button class="close-btn" id="close-detail">&times;</button>
+                <div id="detail-content"></div>
+            </div>
+
+            <svg id="svg"></svg>
+        </div>
+    </div>
+
+    <script>
+        const data = {
+  "nodes": [
+    {
+      "id": "schema.create_user_req",
+      "label": "create_user_req",
+      "type": "schema",
+      "group": "node",
+      "metadata": {
+        "kind": "node",
+        "role": "query",
+        "intent": null,
+        "purpose": null,
+        "fields": {
+          "name": "string",
+          "email": "string"
+        },
+        "input": [],
+        "output": []
+      }
+    },
+    {
+      "id": "schema.user",
+      "label": "user",
+      "type": "schema",
+      "group": "node",
+      "metadata": {
+        "kind": "node",
+        "role": "data",
+        "intent": null,
+        "purpose": null,
+        "fields": {
+          "name": "string",
+          "user_id": "string",
+          "email": "string"
+        },
+        "input": [],
+        "output": []
+      }
+    },
+    {
+      "id": "schema.users_snapshot",
+      "label": "users_snapshot",
+      "type": "schema",
+      "group": "boundary",
+      "metadata": {
+        "kind": "boundary",
+        "role": "context",
+        "intent": null,
+        "purpose": null,
+        "fields": {},
+        "input": [],
+        "output": []
+      }
+    },
+    {
+      "id": "func.create_user",
+      "label": "create_user",
+      "type": "func",
+      "group": "function",
+      "metadata": {
+        "kind": "func",
+        "role": null,
+        "intent": "Construct User from CreateUserRequest",
+        "purpose": null,
+        "fields": {},
+        "input": [
+          "schema.create_user_req"
+        ],
+        "output": [
+          "schema.user"
+        ]
+      }
+    },
+    {
+      "id": "func.get_user",
+      "label": "get_user",
+      "type": "func",
+      "group": "function",
+      "metadata": {
+        "kind": "func",
+        "role": null,
+        "intent": "Get a single User by ID",
+        "purpose": null,
+        "fields": {},
+        "input": [
+          "schema.users_snapshot"
+        ],
+        "output": [
+          "schema.user"
+        ]
+      }
+    },
+    {
+      "id": "func.save_user",
+      "label": "save_user",
+      "type": "func",
+      "group": "function",
+      "metadata": {
+        "kind": "func",
+        "role": null,
+        "intent": "Persist User to DB and update users_snapshot",
+        "purpose": null,
+        "fields": {},
+        "input": [
+          "schema.user",
+          "schema.users_snapshot"
+        ],
+        "output": [
+          "schema.users_snapshot"
+        ]
+      }
+    },
+    {
+      "id": "mod.user_http_api",
+      "label": "user_http_api",
+      "type": "mod",
+      "group": "module",
+      "metadata": {
+        "kind": "mod",
+        "role": null,
+        "intent": null,
+        "purpose": "HTTP API for User CRUD operations",
+        "fields": {},
+        "input": [],
+        "output": []
+      }
+    },
+    {
+      "id": "schema.token",
+      "label": "token",
+      "type": "schema",
+      "group": "node",
+      "metadata": {
+        "kind": "node",
+        "role": "data",
+        "intent": null,
+        "purpose": null,
+        "fields": {
+          "token": "string",
+          "user_id": "string"
+        },
+        "input": [],
+        "output": []
+      }
+    },
+    {
+      "id": "func.validate_token",
+      "label": "validate_token",
+      "type": "func",
+      "group": "function",
+      "metadata": {
+        "kind": "func",
+        "role": null,
+        "intent": "Validate authentication token",
+        "purpose": null,
+        "fields": {},
+        "input": [
+          "schema.token"
+        ],
+        "output": [
+          "schema.token"
+        ]
+      }
+    },
+    {
+      "id": "mod.auth",
+      "label": "auth",
+      "type": "mod",
+      "group": "module",
+      "metadata": {
+        "kind": "mod",
+        "role": null,
+        "intent": null,
+        "purpose": "Authentication service",
+        "fields": {},
+        "input": [],
+        "output": []
+      }
+    }
+  ],
+  "links": [
+    {
+      "source": "schema.users_snapshot",
+      "target": "schema.user",
+      "label": "contains",
+      "type": "boundary"
+    },
+    {
+      "source": "schema.create_user_req",
+      "target": "func.create_user",
+      "label": "input",
+      "type": "func_input"
+    },
+    {
+      "source": "func.create_user",
+      "target": "schema.user",
+      "label": "output",
+      "type": "func_output"
+    },
+    {
+      "source": "schema.users_snapshot",
+      "target": "func.get_user",
+      "label": "input",
+      "type": "func_input"
+    },
+    {
+      "source": "func.get_user",
+      "target": "schema.user",
+      "label": "output",
+      "type": "func_output"
+    },
+    {
+      "source": "schema.user",
+      "target": "func.save_user",
+      "label": "input",
+      "type": "func_input"
+    },
+    {
+      "source": "schema.users_snapshot",
+      "target": "func.save_user",
+      "label": "input",
+      "type": "func_input"
+    },
+    {
+      "source": "func.save_user",
+      "target": "schema.users_snapshot",
+      "label": "output",
+      "type": "func_output"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "schema.user",
+      "label": "uses",
+      "type": "mod_schema"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "schema.create_user_req",
+      "label": "uses",
+      "type": "mod_schema"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "schema.users_snapshot",
+      "label": "uses",
+      "type": "mod_schema"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "func.create_user",
+      "label": "uses",
+      "type": "mod_func"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "func.save_user",
+      "label": "uses",
+      "type": "mod_func"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "func.get_user",
+      "label": "uses",
+      "type": "mod_func"
+    },
+    {
+      "source": "schema.token",
+      "target": "func.validate_token",
+      "label": "input",
+      "type": "func_input"
+    },
+    {
+      "source": "func.validate_token",
+      "target": "schema.token",
+      "label": "output",
+      "type": "func_output"
+    },
+    {
+      "source": "mod.auth",
+      "target": "schema.token",
+      "label": "uses",
+      "type": "mod_schema"
+    },
+    {
+      "source": "mod.auth",
+      "target": "func.validate_token",
+      "label": "uses",
+      "type": "mod_func"
+    },
+    {
+      "source": "mod.user_http_api",
+      "target": "mod.auth",
+      "label": "requires",
+      "type": "mod_require"
+    }
+  ]
+};
+
+        const width = document.getElementById('graph').clientWidth;
+        const height = document.getElementById('graph').clientHeight;
+
+        const svg = d3.select('#svg');
+        const g = svg.append('g');
+
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4])
+            .on('zoom', (event) => {
+                g.attr('transform', event.transform);
+            });
+
+        svg.call(zoom);
+
+        const colorMap = {
+            'node': '#2980b9',
+            'edge': '#27ae60',
+            'boundary': '#f39c12',
+            'space': '#8e44ad',
+            'function': '#27ae60',
+            'module': '#8e44ad'
+        };
+
+        const simulation = d3.forceSimulation(data.nodes)
+            .force('link', d3.forceLink(data.links).id(d => d.id).distance(150))
+            .force('charge', d3.forceManyBody().strength(-400))
+            .force('center', d3.forceCenter(width / 2, height / 2))
+            .force('collision', d3.forceCollide().radius(40));
+
+        const link = g.append('g')
+            .selectAll('path')
+            .data(data.links)
+            .join('path')
+            .attr('class', 'link')
+            .attr('data-type', d => d.type)
+            .attr('marker-end', 'url(#arrow)');
+
+        svg.append('defs').append('marker')
+            .attr('id', 'arrow')
+            .attr('viewBox', '0 -5 10 10')
+            .attr('refX', 25)
+            .attr('refY', 0)
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .attr('orient', 'auto')
+            .append('path')
+            .attr('d', 'M0,-5L10,0L0,5')
+            .attr('fill', '#666');
+
+        const node = g.append('g')
+            .selectAll('g')
+            .data(data.nodes)
+            .join('g')
+            .attr('class', 'node')
+            .attr('data-type', d => d.type)
+            .attr('data-group', d => d.group)
+            .call(d3.drag()
+                .on('start', dragstarted)
+                .on('drag', dragged)
+                .on('end', dragended));
+
+        node.append('circle')
+            .attr('r', 20)
+            .attr('fill', d => colorMap[d.group] || '#999');
+
+        node.append('text')
+            .attr('dy', 35)
+            .text(d => d.label);
+
+        node.on('click', (event, d) => {
+            event.stopPropagation();
+            showDetail(d);
+            highlightConnections(d);
+        });
+
+        svg.on('click', () => {
+            hideDetail();
+            clearHighlight();
+        });
+
+        simulation.on('tick', () => {
+            link.attr('d', d => {
+                const dx = d.target.x - d.source.x;
+                const dy = d.target.y - d.source.y;
+                return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
+            });
+
+            node.attr('transform', d => `translate(${d.x},${d.y})`);
+        });
+
+        function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+
+        function showDetail(d) {
+            const panel = document.getElementById('detail-panel');
+            const content = document.getElementById('detail-content');
+
+            let html = `<h2>${d.label}</h2>`;
+            html += `<div class="detail-section"><h4>Type</h4><p>${d.type} (${d.group})</p></div>`;
+
+            if (d.metadata.kind) {
+                html += `<div class="detail-section"><h4>Kind</h4><p>${d.metadata.kind}</p></div>`;
+            }
+
+            if (d.metadata.role) {
+                html += `<div class="detail-section"><h4>Role</h4><p>${d.metadata.role}</p></div>`;
+            }
+
+            if (d.metadata.intent) {
+                html += `<div class="detail-section"><h4>Intent</h4><p>${d.metadata.intent}</p></div>`;
+            }
+
+            if (d.metadata.purpose) {
+                html += `<div class="detail-section"><h4>Purpose</h4><p>${d.metadata.purpose}</p></div>`;
+            }
+
+            if (d.metadata.input && d.metadata.input.length > 0) {
+                html += `<div class="detail-section"><h4>Input</h4><ul class="detail-list">`;
+                d.metadata.input.forEach(i => html += `<li>${i}</li>`);
+                html += `</ul></div>`;
+            }
+
+            if (d.metadata.output && d.metadata.output.length > 0) {
+                html += `<div class="detail-section"><h4>Output</h4><ul class="detail-list">`;
+                d.metadata.output.forEach(o => html += `<li>${o}</li>`);
+                html += `</ul></div>`;
+            }
+
+            if (Object.keys(d.metadata.fields).length > 0) {
+                html += `<div class="detail-section"><h4>Fields</h4><table class="field-table">`;
+                for (const [key, value] of Object.entries(d.metadata.fields)) {
+                    html += `<tr><td>${key}</td><td>${value}</td></tr>`;
+                }
+                html += `</table></div>`;
+            }
+
+            content.innerHTML = html;
+            panel.classList.add('active');
+        }
+
+        function hideDetail() {
+            document.getElementById('detail-panel').classList.remove('active');
+        }
+
+        function highlightConnections(d) {
+            const connectedNodes = new Set([d.id]);
+            const connectedLinks = new Set();
+
+            data.links.forEach(l => {
+                if (l.source.id === d.id || l.target.id === d.id) {
+                    connectedLinks.add(l);
+                    connectedNodes.add(l.source.id);
+                    connectedNodes.add(l.target.id);
+                }
+            });
+
+            node.classed('dimmed', n => !connectedNodes.has(n.id))
+                .classed('highlighted', n => n.id === d.id);
+
+            link.classed('dimmed', l => !connectedLinks.has(l))
+                .classed('highlighted', l => connectedLinks.has(l));
+        }
+
+        function clearHighlight() {
+            node.classed('dimmed', false).classed('highlighted', false);
+            link.classed('dimmed', false).classed('highlighted', false);
+        }
+
+        // Search
+        document.getElementById('search').addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            node.classed('dimmed', d => !d.label.toLowerCase().includes(query));
+        });
+
+        // Filters
+        function updateFilters() {
+            const typeFilters = {
+                'schema': document.getElementById('filter-schema').checked,
+                'func': document.getElementById('filter-func').checked,
+                'mod': document.getElementById('filter-mod').checked
+            };
+
+            const groupFilters = {
+                'node': document.getElementById('filter-node').checked,
+                'edge': document.getElementById('filter-edge').checked,
+                'boundary': document.getElementById('filter-boundary').checked,
+                'space': document.getElementById('filter-space').checked,
+                'function': true,
+                'module': true
+            };
+
+            const linkFilters = {
+                'func_input': document.getElementById('link-func').checked,
+                'func_output': document.getElementById('link-func').checked,
+                'mod_schema': document.getElementById('link-mod').checked,
+                'mod_func': document.getElementById('link-mod').checked,
+                'mod_require': document.getElementById('link-require').checked,
+                'edge_from': document.getElementById('link-schema').checked,
+                'edge_to': document.getElementById('link-schema').checked,
+                'boundary': document.getElementById('link-schema').checked,
+                'space': document.getElementById('link-schema').checked
+            };
+
+            node.style('display', d => {
+                return typeFilters[d.type] && groupFilters[d.group] ? 'block' : 'none';
+            });
+
+            link.style('display', l => {
+                return linkFilters[l.type] ? 'block' : 'none';
+            });
+        }
+
+        document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.addEventListener('change', updateFilters);
+        });
+
+        // Controls
+        document.getElementById('reset-zoom').addEventListener('click', () => {
+            svg.transition().duration(750).call(
+                zoom.transform,
+                d3.zoomIdentity.translate(0, 0).scale(1)
+            );
+        });
+
+        document.getElementById('reset-positions').addEventListener('click', () => {
+            simulation.alpha(1).restart();
+        });
+
+        document.getElementById('close-detail').addEventListener('click', () => {
+            hideDetail();
+            clearHighlight();
+        });
+    </script>
+</body>
+</html>

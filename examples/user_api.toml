@@ -1,0 +1,46 @@
+namespace = "example.user"
+require = ["mod.auth"]
+
+[meta]
+name        = "user_crud_example"
+version     = "0.1.0"
+description = "User CRUD API example in Surv IR"
+
+[schema.user]
+kind   = "node"
+role   = "data"
+type   = "User"
+fields = { user_id = "string", name = "string", email = "string" }
+
+[schema.create_user_req]
+kind   = "node"
+role   = "query"
+type   = "CreateUserRequest"
+fields = { name = "string", email = "string" }
+
+[schema.users_snapshot]
+kind  = "boundary"
+role  = "context"
+over  = ["schema.user"]
+label = "Current users in DB"
+
+[func.create_user]
+intent = "Construct User from CreateUserRequest"
+input  = ["schema.create_user_req"]
+output = ["schema.user"]
+
+[func.save_user]
+intent = "Persist User to DB and update users_snapshot"
+input  = ["schema.user", "schema.users_snapshot"]
+output = ["schema.users_snapshot"]
+
+[func.get_user]
+intent = "Get a single User by ID"
+input  = ["schema.users_snapshot"]
+output = ["schema.user"]
+
+[mod.user_http_api]
+purpose = "HTTP API for User CRUD operations"
+schemas = ["schema.user", "schema.create_user_req", "schema.users_snapshot"]
+funcs   = ["func.create_user", "func.save_user", "func.get_user"]
+pipeline = ["func.create_user", "func.save_user"]

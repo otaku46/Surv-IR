@@ -1,0 +1,18 @@
+package = "common"
+namespace = "app.common"
+
+[schema.Token]
+kind = "node"
+role = "entity"
+fields = {token = "string", expires_at = "timestamp"}
+
+[func.validateToken]
+intent = "Validate authentication token"
+input = ["schema.Token"]
+output = ["schema.TokenValidation"]
+
+[mod.auth]
+purpose = "Authentication utilities"
+schemas = ["schema.Token"]
+funcs = ["func.validateToken"]
+pipeline = ["func.validateToken"]

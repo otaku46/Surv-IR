@@ -1,0 +1,65 @@
+# Pattern: Event-Driven Processing
+# Use case: Order fulfillment event processing with email notifications
+# Reference: PATTERN_CATALOG.md - Pattern 3
+
+[schema.OrderCreatedEvent]
+kind = "node"
+role = "event"
+fields = {event_id = "uuid", order_id = "uuid", customer_id = "uuid", total_amount = "float", timestamp = "timestamp", trace_id = "string", source = "string"}
+
+[schema.OrderPaidEvent]
+kind = "node"
+role = "event"
+fields = {event_id = "uuid", order_id = "uuid", payment_id = "uuid", amount = "float", timestamp = "timestamp", trace_id = "string", source = "string"}
+
+[schema.SendEmailEvent]
+kind = "node"
+role = "event"
+fields = {event_id = "uuid", to = "string", template = "string", data = "json", timestamp = "timestamp", trace_id = "string"}
+
+[schema.UpdateInventoryEvent]
+kind = "node"
+role = "event"
+fields = {event_id = "uuid", order_id = "uuid", items = "json", timestamp = "timestamp", trace_id = "string"}
+
+[schema.EventProcessed]
+kind = "node"
+role = "output"
+fields = {event_id = "uuid", processed_at = "timestamp", trace_id = "string"}
+
+[schema.EventProcessingError]
+kind = "node"
+role = "error"
+fields = {event_id = "uuid", error_message = "string", retryable = "bool", trace_id = "string"}
+
+[func.handleOrderCreated]
+intent = "Handle order created event: send confirmation email and reserve inventory"
+input = ["schema.OrderCreatedEvent"]
+output = ["schema.SendEmailEvent", "schema.UpdateInventoryEvent", "schema.EventProcessingError"]
+
+[func.handleOrderPaid]
+intent = "Handle order paid event: send payment confirmation"
+input = ["schema.OrderPaidEvent"]
+output = ["schema.SendEmailEvent", "schema.EventProcessingError"]
+
+[func.publishEmailEvent]
+intent = "Publish email event to email service queue"
+input = ["schema.SendEmailEvent"]
+output = ["schema.EventProcessed", "schema.EventProcessingError"]
+
+[func.publishInventoryEvent]
+intent = "Publish inventory update event"
+input = ["schema.UpdateInventoryEvent"]
+output = ["schema.EventProcessed", "schema.EventProcessingError"]
+
+[func.validateEvent]
+intent = "Validate event structure and deduplicate"
+input = ["schema.OrderCreatedEvent"]
+output = ["schema.OrderCreatedEvent", "schema.EventProcessingError"]
+
+[mod.order_event_processor]
+purpose = "Process order lifecycle events and trigger downstream actions"
+schemas = ["schema.OrderCreatedEvent", "schema.OrderPaidEvent", "schema.SendEmailEvent", "schema.UpdateInventoryEvent", "schema.EventProcessed", "schema.EventProcessingError"]
+funcs = ["func.handleOrderCreated", "func.handleOrderPaid", "func.publishEmailEvent", "func.publishInventoryEvent", "func.validateEvent"]
+boundary = {queue = ["orders.created", "orders.paid", "email.send", "inventory.update"]}
+pipeline = ["func.validateEvent", "func.handleOrderCreated", "func.publishEmailEvent", "func.publishInventoryEvent"]

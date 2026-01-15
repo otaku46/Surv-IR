@@ -1,0 +1,77 @@
+# Multi-module example with different states
+
+[schema.User]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", name = "string"}
+
+[schema.Post]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", title = "string", author_id = "uuid"}
+
+[func.createUser]
+intent = "Create user"
+input = ["schema.User"]
+output = ["schema.User"]
+
+[func.createPost]
+intent = "Create post"
+input = ["schema.Post"]
+output = ["schema.Post"]
+
+[mod.user_api]
+purpose = "User management API"
+schemas = ["schema.User"]
+funcs = ["func.createUser"]
+pipeline = ["func.createUser"]
+
+[mod.post_api]
+purpose = "Post management API"
+schemas = ["schema.Post"]
+funcs = ["func.createPost"]
+pipeline = ["func.createPost"]
+
+[mod.analytics]
+purpose = "Analytics module"
+schemas = ["schema.User", "schema.Post"]
+funcs = []
+pipeline = []
+
+# ============================================================================
+# IMPLEMENTATION STATUS
+# ============================================================================
+
+[status]
+updated_at = "2026-01-14"
+
+[status.mod.user_api]
+state = "done"
+coverage = 1.0
+notes = "Fully implemented and tested"
+
+[status.mod.post_api]
+state = "partial"
+coverage = 0.5
+notes = "Basic CRUD done, missing search functionality"
+
+[status.mod.analytics]
+state = "skeleton"
+coverage = 0.0
+notes = "Only types and boundaries defined, no implementation"
+
+[func.exportData]
+intent = "Export data"
+input = ["schema.User", "schema.Post"]
+output = ["schema.Post"]
+
+[mod.export_module]
+purpose = "Data export functionality"
+schemas = ["schema.User", "schema.Post"]
+funcs = ["func.exportData"]
+pipeline = ["func.exportData"]
+
+[status.mod.export_module]
+state = "todo"
+coverage = 0.0
+notes = ""

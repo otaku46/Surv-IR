@@ -1,0 +1,22 @@
+namespace = "example.auth"
+
+[meta]
+name        = "auth_module"
+version     = "0.1.0"
+description = "Authentication module"
+
+[schema.token]
+kind   = "node"
+role   = "data"
+type   = "AuthToken"
+fields = { token = "string", user_id = "string" }
+
+[func.validate_token]
+intent = "Validate authentication token"
+input  = ["schema.token"]
+output = ["schema.token"]
+
+[mod.auth]
+purpose = "Authentication service"
+schemas = ["schema.token"]
+funcs   = ["func.validate_token"]

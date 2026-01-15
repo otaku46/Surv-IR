@@ -1,0 +1,73 @@
+[deploy.pipeline]
+name = "webapp-deploy"
+description = "Production deployment pipeline for web application"
+
+[deploy.target.staging]
+kind = "staging"
+domain = "staging.example.com"
+
+[deploy.target.prod]
+kind = "production"
+domain = "example.com"
+
+[deploy.artifact.webapp_image]
+type = "docker"
+repo = "ghcr.io/acme/webapp"
+tag = "git_sha"
+
+[deploy.secret.DB_URL]
+scope = ["target.prod", "target.staging"]
+
+[deploy.secret.API_KEY]
+scope = ["target.prod"]
+
+[deploy.perm.deployer]
+role = "deploy-operator"
+allows = ["deploy", "read:secrets"]
+
+[deploy.job.build]
+requires = []
+runs = [
+    "npm ci",
+    "npm run build",
+    "docker build -t webapp:latest ."
+]
+produces = ["artifact.webapp_image"]
+
+[deploy.job.test]
+requires = ["job.build"]
+runs = [
+    "npm run test",
+    "npm run test:e2e"
+]
+
+[deploy.job.deploy_staging]
+requires = ["job.test"]
+runs = ["kubectl apply -f k8s/staging/"]
+uses_target = "target.staging"
+needs_secrets = ["secret.DB_URL"]
+uses_perm = "perm.deployer"
+
+[deploy.job.integration_test]
+requires = ["job.deploy_staging"]
+runs = ["npm run test:integration"]
+uses_target = "target.staging"
+
+[deploy.job.deploy_prod]
+requires = ["job.integration_test"]
+runs = ["kubectl apply -f k8s/prod/"]
+uses_target = "target.prod"
+needs_secrets = ["secret.DB_URL", "secret.API_KEY"]
+uses_perm = "perm.deployer"
+side_effects = ["release"]
+
+[deploy.release]
+strategy = "canary"
+health_check = "https://{domain}/health"
+
+[deploy.gate]
+require_manual_approval_for = ["target.prod"]
+
+[deploy.rollback]
+on = ["health_fail", "deploy_fail"]
+strategy = "revert_traffic"

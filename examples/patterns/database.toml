@@ -1,0 +1,75 @@
+# Pattern: Database Access Layer (Repository Pattern)
+# Use case: User data access layer with CRUD operations
+# Reference: PATTERN_CATALOG.md - Pattern 2
+
+[schema.User]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", email = "string", username = "string", password_hash = "string", first_name = "string", last_name = "string", is_active = "bool", created_at = "timestamp", updated_at = "timestamp"}
+
+[schema.UserByIdQuery]
+kind = "node"
+role = "query"
+fields = {id = "uuid"}
+
+[schema.UserByEmailQuery]
+kind = "node"
+role = "query"
+fields = {email = "string"}
+
+[schema.CreateUserData]
+kind = "node"
+role = "input"
+fields = {email = "string", username = "string", password_hash = "string", first_name = "string", last_name = "string"}
+
+[schema.UpdateUserData]
+kind = "node"
+role = "input"
+fields = {id = "uuid", email = "string?", username = "string?", first_name = "string?", last_name = "string?", is_active = "bool?"}
+
+[schema.NotFoundError]
+kind = "node"
+role = "error"
+fields = {message = "string", table = "string", id = "uuid"}
+
+[schema.DuplicateKeyError]
+kind = "node"
+role = "error"
+fields = {message = "string", table = "string", field = "string", value = "string"}
+
+[schema.DatabaseError]
+kind = "node"
+role = "error"
+fields = {message = "string", code = "string", query = "string"}
+
+[func.findUserById]
+intent = "Find user by ID"
+input = ["schema.UserByIdQuery"]
+output = ["schema.User", "schema.NotFoundError", "schema.DatabaseError"]
+
+[func.findUserByEmail]
+intent = "Find user by email address"
+input = ["schema.UserByEmailQuery"]
+output = ["schema.User", "schema.NotFoundError", "schema.DatabaseError"]
+
+[func.createUser]
+intent = "Insert new user into database"
+input = ["schema.CreateUserData"]
+output = ["schema.User", "schema.DuplicateKeyError", "schema.DatabaseError"]
+
+[func.updateUser]
+intent = "Update existing user in database"
+input = ["schema.UpdateUserData"]
+output = ["schema.User", "schema.NotFoundError", "schema.DatabaseError"]
+
+[func.deleteUser]
+intent = "Soft delete user by setting is_active = false"
+input = ["schema.UserByIdQuery"]
+output = ["schema.User", "schema.NotFoundError", "schema.DatabaseError"]
+
+[mod.user_repository]
+purpose = "User data access layer with transaction support"
+schemas = ["schema.User", "schema.UserByIdQuery", "schema.UserByEmailQuery", "schema.CreateUserData", "schema.UpdateUserData", "schema.NotFoundError", "schema.DuplicateKeyError", "schema.DatabaseError"]
+funcs = ["func.findUserById", "func.findUserByEmail", "func.createUser", "func.updateUser", "func.deleteUser"]
+boundary = {db = ["users"]}
+pipeline = ["func.createUser", "func.findUserById"]

@@ -1,0 +1,36 @@
+surv_file ::= header* section*
+
+header ::= namespace_decl
+         | import_decl
+         | require_decl
+
+namespace_decl ::= "namespace" "=" STRING
+
+import_decl ::= "import" "=" array
+
+require_decl ::= "require" "=" array
+               | "requires" "=" array
+
+section ::= mod_section
+          | func_section
+          | schema_section
+          | pipeline_section
+
+mod_section ::= "[mod." IDENT "]" mod_body
+mod_body ::= kv_pair*
+
+func_section ::= "[func." IDENT "]" func_body
+func_body ::= kv_pair*
+
+schema_section ::= "[schema." IDENT "]" schema_body
+schema_body ::= kv_pair*
+
+pipeline_section ::= "[pipeline." IDENT "]" pipeline_body
+pipeline_body ::= kv_pair*
+
+kv_pair ::= KEY "=" value
+value ::= STRING | array | object | number | bool
+
+array ::= "[" (value ("," value)*)? "]"
+object ::= "{" (key_value ("," key_value)*)? "}"
+key_value ::= KEY ":" value

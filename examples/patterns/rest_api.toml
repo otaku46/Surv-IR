@@ -1,0 +1,138 @@
+# Pattern: REST API Module
+# Use case: Building HTTP REST API endpoints for a book library system
+# Reference: PATTERN_CATALOG.md - Pattern 1
+
+# ============================================================================
+# SCHEMAS: Domain Entities
+# ============================================================================
+
+[schema.Book]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", title = "string", author = "string", isbn = "string", published_year = "int", available = "bool"}
+
+# ============================================================================
+# SCHEMAS: Request/Response
+# ============================================================================
+
+[schema.GetBookRequest]
+kind = "node"
+role = "request"
+fields = {id = "uuid"}
+
+[schema.CreateBookRequest]
+kind = "node"
+role = "request"
+fields = {title = "string", author = "string", isbn = "string", published_year = "int"}
+
+[schema.UpdateBookRequest]
+kind = "node"
+role = "request"
+fields = {id = "uuid", title = "string?", author = "string?", isbn = "string?", available = "bool?"}
+
+[schema.DeleteBookRequest]
+kind = "node"
+role = "request"
+fields = {id = "uuid"}
+
+[schema.BookResponse]
+kind = "node"
+role = "response"
+fields = {book = "Book", timestamp = "timestamp"}
+
+[schema.BookListResponse]
+kind = "node"
+role = "response"
+fields = {books = "[Book]", total = "int", page = "int"}
+
+# ============================================================================
+# SCHEMAS: Errors
+# ============================================================================
+
+[schema.ValidationError]
+kind = "node"
+role = "error"
+fields = {code = "string", message = "string", field = "string"}
+
+[schema.NotFoundError]
+kind = "node"
+role = "error"
+fields = {code = "string", message = "string", resource_id = "uuid"}
+
+[schema.ConflictError]
+kind = "node"
+role = "error"
+fields = {code = "string", message = "string", existing_id = "uuid"}
+
+# ============================================================================
+# FUNCTIONS: Validation
+# ============================================================================
+
+[func.validateGetBookRequest]
+intent = "Validate request parameters for getting a book"
+input = ["schema.GetBookRequest"]
+output = ["schema.GetBookRequest", "schema.ValidationError"]
+
+[func.validateCreateBookRequest]
+intent = "Validate request body for creating a book"
+input = ["schema.CreateBookRequest"]
+output = ["schema.CreateBookRequest", "schema.ValidationError"]
+
+[func.validateUpdateBookRequest]
+intent = "Validate request body for updating a book"
+input = ["schema.UpdateBookRequest"]
+output = ["schema.UpdateBookRequest", "schema.ValidationError"]
+
+# ============================================================================
+# FUNCTIONS: Business Logic
+# ============================================================================
+
+[func.getBook]
+intent = "Retrieve book by ID from database"
+input = ["schema.GetBookRequest"]
+output = ["schema.Book", "schema.NotFoundError"]
+
+[func.createBook]
+intent = "Create new book in database"
+input = ["schema.CreateBookRequest"]
+output = ["schema.Book", "schema.ConflictError"]
+
+[func.updateBook]
+intent = "Update existing book in database"
+input = ["schema.UpdateBookRequest"]
+output = ["schema.Book", "schema.NotFoundError"]
+
+[func.deleteBook]
+intent = "Delete book from database"
+input = ["schema.DeleteBookRequest"]
+output = ["schema.Book", "schema.NotFoundError"]
+
+[func.listBooks]
+intent = "List all books with pagination"
+input = []
+output = ["schema.BookListResponse"]
+
+# ============================================================================
+# FUNCTIONS: Response Serialization
+# ============================================================================
+
+[func.serializeBookResponse]
+intent = "Serialize book entity to JSON response"
+input = ["schema.Book"]
+output = ["schema.BookResponse"]
+
+[func.serializeBookListResponse]
+intent = "Serialize book list to JSON response"
+input = ["schema.BookListResponse"]
+output = ["schema.BookListResponse"]
+
+# ============================================================================
+# MODULE: Book API
+# ============================================================================
+
+[mod.book_api]
+purpose = "Book library REST API with CRUD operations"
+schemas = ["schema.Book", "schema.GetBookRequest", "schema.CreateBookRequest", "schema.UpdateBookRequest", "schema.DeleteBookRequest", "schema.BookResponse", "schema.BookListResponse", "schema.ValidationError", "schema.NotFoundError", "schema.ConflictError"]
+funcs = ["func.validateGetBookRequest", "func.validateCreateBookRequest", "func.validateUpdateBookRequest", "func.getBook", "func.createBook", "func.updateBook", "func.deleteBook", "func.listBooks", "func.serializeBookResponse", "func.serializeBookListResponse"]
+boundary = {http = ["GET /books/:id", "POST /books", "PUT /books/:id", "DELETE /books/:id", "GET /books"]}
+pipeline = ["func.validateGetBookRequest", "func.getBook", "func.serializeBookResponse"]
