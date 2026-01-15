@@ -1,0 +1,29 @@
+package = "backend"
+namespace = "app.api"
+
+[schema.User]
+kind = "node"
+role = "entity"
+fields = {email = "string", id = "uuid", name = "string"}
+
+[schema.UserRequest]
+kind = "node"
+role = "dto"
+fields = {email = "string", name = "string"}
+
+[func.createUser]
+intent = "Create new user"
+input = ["schema.UserRequest"]
+output = ["schema.User"]
+
+[func.getUser]
+intent = "Get user by ID"
+input = ["schema.User"]
+output = ["schema.User"]
+
+[mod.user_api]
+purpose = "User management API"
+schemas = ["schema.User", "schema.UserRequest"]
+funcs = ["func.createUser", "func.getUser"]
+pipeline = ["func.createUser", "func.getUser"]
+

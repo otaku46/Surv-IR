@@ -1,0 +1,20 @@
+[project]
+name = "test-split-project"
+
+[paths]
+ir_root = "design"
+
+[packages.backend]
+root = "design/backend"
+namespace = "app.api"
+depends = ["common"]
+
+[packages.common]
+root = "design/common"
+namespace = "app.common"
+
+[packages.frontend]
+root = "design/frontend"
+namespace = "app.ui"
+depends = ["backend"]
+

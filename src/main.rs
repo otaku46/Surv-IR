@@ -12,8 +12,10 @@ use survibe_parser_rs::codegen::{GitHubActionsGenerator, GitLabCIGenerator};
 
 mod status_commands;
 mod deps_commands;
+mod split_commands;
 use status_commands::run_status;
 use deps_commands::run_deps;
+use split_commands::run_split;
 
 fn main() {
     if let Err(err) = run() {
@@ -111,6 +113,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             run_deps(&args[2..])
         }
+        "split" => {
+            if args.len() < 3 {
+                eprintln!("Usage: surc split <input.toml> --config <split_config.toml>");
+                std::process::exit(1);
+            }
+            run_split(&args[2..])
+        }
         "diff-impl" => {
             if args.len() < 4 {
                 print_diff_impl_usage();
@@ -141,6 +150,7 @@ fn print_usage() {
     eprintln!("  inspect <module> <file>     Inspect a module's schemas, funcs, and pipeline");
     eprintln!("  status <subcommand>         Manage implementation status");
     eprintln!("  deps <manifest>             Show package and module dependencies");
+    eprintln!("  split <input> --config <c>  Split single IR file into multi-package project");
     eprintln!("  diff-impl <ir> <workspace>  Detect drift between IR and implementation");
     eprintln!("  export <type> <file>        Export visualizations");
     eprintln!("  codegen <platform> <file>   Generate CI/CD configuration");

@@ -1,0 +1,29 @@
+package = "backend"
+namespace = "app.api"
+
+[schema.Order]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", total = "decimal", user_id = "uuid"}
+
+[schema.OrderRequest]
+kind = "node"
+role = "dto"
+fields = {items = "array", user_id = "uuid"}
+
+[func.createOrder]
+intent = "Create new order"
+input = ["schema.OrderRequest"]
+output = ["schema.Order"]
+
+[func.getOrder]
+intent = "Get order by ID"
+input = ["schema.Order"]
+output = ["schema.Order"]
+
+[mod.order_api]
+purpose = "Order management API"
+schemas = ["schema.Order", "schema.OrderRequest"]
+funcs = ["func.createOrder", "func.getOrder"]
+pipeline = ["func.createOrder", "func.getOrder"]
+

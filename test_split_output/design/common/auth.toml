@@ -1,0 +1,24 @@
+package = "common"
+namespace = "app.common"
+
+[schema.Token]
+kind = "node"
+role = "entity"
+fields = {expires_at = "timestamp", token = "string"}
+
+[schema.TokenValidation]
+kind = "node"
+role = "entity"
+fields = {user_id = "uuid", valid = "bool"}
+
+[func.validateToken]
+intent = "Validate authentication token"
+input = ["schema.Token"]
+output = ["schema.TokenValidation"]
+
+[mod.auth]
+purpose = "Authentication utilities"
+schemas = ["schema.Token", "schema.TokenValidation"]
+funcs = ["func.validateToken"]
+pipeline = ["func.validateToken"]
+

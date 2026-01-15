@@ -1,0 +1,41 @@
+# Split configuration for test_split_input.toml
+
+[split]
+output_dir = "test_split_output"
+manifest = "surv.toml"
+project_name = "test-split-project"
+ir_root = "design"
+
+[split.behavior]
+shared_symbols = "copy"
+run_project_check = true
+
+# Common package (auth module)
+[split.packages.common]
+root = "design/common"
+namespace = "app.common"
+
+modules = [
+  { mod = "mod.auth", file = "auth.toml" }
+]
+
+# Backend package (user and order APIs)
+[split.packages.backend]
+root = "design/backend"
+namespace = "app.api"
+depends = ["common"]
+
+modules = [
+  { mod = "mod.user_api", file = "user.toml" },
+  { mod = "mod.order_api", file = "order.toml" }
+]
+
+# Frontend package (user UI)
+[split.packages.frontend]
+root = "design/frontend"
+namespace = "app.ui"
+depends = ["backend"]
+
+modules = [
+  { mod = "mod.user_ui", file = "ui.toml" }
+]

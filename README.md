@@ -120,6 +120,18 @@ surc deps surv.toml --cross-package
 surc deps surv.toml --format mermaid > deps.md
 ```
 
+#### File Splitting
+```bash
+# Split a single large IR file into multi-package project
+surc split large_api.toml --config split_config.toml
+
+# This creates:
+# - output_dir/surv.toml (project manifest)
+# - output_dir/design/{package}/{file}.toml (split files)
+# - Automatic dependency closure for each module
+# - Warnings for shared symbols
+```
+
 #### Status Management
 ```bash
 # Initialize status section for all modules
@@ -335,6 +347,7 @@ surc export html surv.toml > viz.html
 - **Visualization**: Mermaid diagrams and interactive D3.js graphs
 - **Pattern Library**: 8 common patterns ready to use
 - **Multi-project**: Support for large codebases with manifests
+- **File Splitting**: Split large IR files into multi-package projects with automatic dependency closure
 
 ### ✅ Deploy IR
 - **Security Checks**: Secret scope, production gates, rollback validation

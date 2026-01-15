@@ -1,0 +1,24 @@
+package = "frontend"
+namespace = "app.ui"
+
+[schema.UI]
+kind = "node"
+role = "view"
+fields = {component = "string", props = "map"}
+
+[schema.UserView]
+kind = "node"
+role = "view"
+fields = {display_name = "string", user_id = "uuid"}
+
+[func.renderUserList]
+intent = "Render user list UI"
+input = ["schema.UserView"]
+output = ["schema.UI"]
+
+[mod.user_ui]
+purpose = "User UI components"
+schemas = ["schema.UserView", "schema.UI"]
+funcs = ["func.renderUserList"]
+pipeline = ["func.renderUserList"]
+

@@ -1,0 +1,113 @@
+# Test input for surc split
+# This is a single-file IR that will be split into multiple packages
+
+[meta]
+version = "1.1"
+
+# Common schemas (used by multiple modules)
+[schema.Token]
+kind = "node"
+role = "entity"
+fields = {token = "string", expires_at = "timestamp"}
+
+[schema.TokenValidation]
+kind = "node"
+role = "entity"
+fields = {valid = "bool", user_id = "uuid"}
+
+# Backend schemas
+[schema.User]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", name = "string", email = "string"}
+
+[schema.UserRequest]
+kind = "node"
+role = "dto"
+fields = {name = "string", email = "string"}
+
+[schema.Order]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", user_id = "uuid", total = "decimal"}
+
+[schema.OrderRequest]
+kind = "node"
+role = "dto"
+fields = {user_id = "uuid", items = "array"}
+
+# Frontend schemas
+[schema.UserView]
+kind = "node"
+role = "view"
+fields = {user_id = "uuid", display_name = "string"}
+
+[schema.UI]
+kind = "node"
+role = "view"
+fields = {component = "string", props = "map"}
+
+# Common functions
+[func.validateToken]
+intent = "Validate authentication token"
+input = ["schema.Token"]
+output = ["schema.TokenValidation"]
+
+# Backend functions
+[func.createUser]
+intent = "Create new user"
+input = ["schema.UserRequest"]
+output = ["schema.User"]
+
+[func.getUser]
+intent = "Get user by ID"
+input = ["schema.User"]
+output = ["schema.User"]
+
+[func.createOrder]
+intent = "Create new order"
+input = ["schema.OrderRequest"]
+output = ["schema.Order"]
+
+[func.getOrder]
+intent = "Get order by ID"
+input = ["schema.Order"]
+output = ["schema.Order"]
+
+# Frontend functions
+[func.renderUserList]
+intent = "Render user list UI"
+input = ["schema.UserView"]
+output = ["schema.UI"]
+
+# Common module
+[mod.auth]
+purpose = "Authentication utilities"
+schemas = ["schema.Token", "schema.TokenValidation"]
+funcs = ["func.validateToken"]
+pipeline = ["func.validateToken"]
+
+# Backend modules
+[mod.user_api]
+purpose = "User management API"
+schemas = ["schema.User", "schema.UserRequest"]
+funcs = ["func.createUser", "func.getUser"]
+pipeline = ["func.createUser", "func.getUser"]
+boundary = {http = ["POST /users", "GET /users/:id"]}
+require = ["mod.auth"]
+
+[mod.order_api]
+purpose = "Order management API"
+schemas = ["schema.Order", "schema.OrderRequest"]
+funcs = ["func.createOrder", "func.getOrder"]
+pipeline = ["func.createOrder", "func.getOrder"]
+boundary = {http = ["POST /orders", "GET /orders/:id"]}
+require = ["mod.auth"]
+
+# Frontend module
+[mod.user_ui]
+purpose = "User UI components"
+schemas = ["schema.UserView", "schema.UI"]
+funcs = ["func.renderUserList"]
+pipeline = ["func.renderUserList"]
+require = ["mod.user_api"]
