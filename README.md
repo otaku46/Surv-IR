@@ -166,6 +166,25 @@ surc export schemas surv.toml
 surc export html surv.toml > viz.html
 ```
 
+#### Symbol Analysis
+
+```bash
+# List all references to a symbol
+surc refs schema.User design.toml
+
+# Extract minimal IR fragment for a target
+surc slice mod.user_api design.toml
+
+# Extract with full definitions
+surc slice mod.user_api design.toml --with-defs
+
+# Trace pipeline flow (upstream/downstream)
+surc trace func.createUser design.toml
+
+# Trace module connections
+surc trace mod.user_domain design.toml
+```
+
 #### Parsing
 ```bash
 # Output AST as JSON
