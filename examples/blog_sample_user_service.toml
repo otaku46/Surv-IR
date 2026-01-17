@@ -1,0 +1,115 @@
+# Sample: User Service with Email Notifications
+# This example demonstrates Surv IR's core features:
+# - Intent-based design with explicit dependencies
+# - Data flow through schemas and functions
+# - Module boundaries and cross-cutting concerns
+
+[meta]
+version = "1.1"
+description = "User management service with email notifications"
+
+# ============================================================================
+# SCHEMAS: Define data boundaries between functions
+# ============================================================================
+
+# Entity: User domain object
+[schema.User]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", email = "string", name = "string", created_at = "timestamp"}
+label = "User entity stored in database"
+
+# Request: API input
+[schema.CreateUserRequest]
+kind = "node"
+role = "request"
+fields = {email = "string", name = "string"}
+label = "API request to create user"
+
+# Response: API output
+[schema.CreateUserResponse]
+kind = "node"
+role = "response"
+fields = {user = "schema.User", confirmation_sent = "bool"}
+label = "API response with created user and email status"
+
+# Event: Published after user creation
+[schema.UserCreatedEvent]
+kind = "node"
+role = "event"
+fields = {user_id = "uuid", email = "string", timestamp = "timestamp"}
+label = "Event published to notification system"
+
+# Entity: Email notification record
+[schema.EmailNotification]
+kind = "node"
+role = "entity"
+fields = {id = "uuid", recipient = "string", subject = "string", status = "string"}
+label = "Outgoing email record"
+
+# Edge: Relationship between User and EmailNotification
+[schema.UserEmailRelation]
+kind = "edge"
+role = "entity"
+from = "schema.User"
+to = "schema.EmailNotification"
+label = "User has sent emails"
+
+# ============================================================================
+# FUNCTIONS: Define transformations and operations
+# ============================================================================
+
+# Business logic: Validate and create user
+[func.validateAndCreateUser]
+intent = "Validate user request and create user in database"
+input = ["schema.CreateUserRequest"]
+output = ["schema.User"]
+design_notes = "Should check for duplicate emails before creation"
+
+# Business logic: Emit event
+[func.emitUserCreatedEvent]
+intent = "Convert created user to event for downstream systems"
+input = ["schema.User"]
+output = ["schema.UserCreatedEvent"]
+
+# Cross-cutting: Send welcome email
+[func.sendWelcomeEmail]
+intent = "Send welcome email to new user"
+input = ["schema.UserCreatedEvent"]
+output = ["schema.EmailNotification"]
+
+# API response builder
+[func.buildCreateUserResponse]
+intent = "Build API response with user and confirmation status"
+input = ["schema.User", "schema.EmailNotification"]
+output = ["schema.CreateUserResponse"]
+
+# ============================================================================
+# MODULES: Compose schemas and functions into cohesive units
+# ============================================================================
+
+# Core domain logic module
+[mod.user_domain]
+purpose = "User creation and domain logic"
+schemas = ["schema.User", "schema.CreateUserRequest", "schema.UserCreatedEvent"]
+funcs = ["func.validateAndCreateUser", "func.emitUserCreatedEvent"]
+pipeline = ["func.validateAndCreateUser", "func.emitUserCreatedEvent"]
+label = "Domain model for users"
+
+# Notification module: Handles side effects
+[mod.notification_service]
+purpose = "Email notification handling"
+schemas = ["schema.EmailNotification", "schema.UserEmailRelation"]
+funcs = ["func.sendWelcomeEmail"]
+pipeline = ["func.sendWelcomeEmail"]
+boundary = {events = ["user.created"]}
+label = "Cross-cutting notification concern"
+
+# HTTP API module: Orchestrates the flow
+[mod.user_http_api]
+purpose = "REST API for user creation"
+schemas = ["schema.CreateUserRequest", "schema.CreateUserResponse", "schema.User", "schema.UserCreatedEvent", "schema.EmailNotification"]
+funcs = ["func.validateAndCreateUser", "func.emitUserCreatedEvent", "func.sendWelcomeEmail", "func.buildCreateUserResponse"]
+pipeline = ["func.validateAndCreateUser", "func.emitUserCreatedEvent", "func.sendWelcomeEmail", "func.buildCreateUserResponse"]
+boundary = {http = ["POST /users"]}
+label = "Public REST endpoint"
