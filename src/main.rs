@@ -13,9 +13,11 @@ use survibe_parser_rs::codegen::{GitHubActionsGenerator, GitLabCIGenerator};
 mod status_commands;
 mod deps_commands;
 mod split_commands;
+mod query_commands;
 use status_commands::run_status;
 use deps_commands::run_deps;
 use split_commands::run_split;
+use query_commands::{run_refs, run_slice, run_trace};
 
 fn main() {
     if let Err(err) = run() {
@@ -120,6 +122,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             run_split(&args[2..])
         }
+        "slice" => {
+            run_slice(&args[2..])
+        }
+        "refs" => {
+            run_refs(&args[2..])
+        }
+        "trace" => {
+            run_trace(&args[2..])
+        }
         "diff-impl" => {
             if args.len() < 4 {
                 print_diff_impl_usage();
@@ -151,6 +162,9 @@ fn print_usage() {
     eprintln!("  status <subcommand>         Manage implementation status");
     eprintln!("  deps <manifest>             Show package and module dependencies");
     eprintln!("  split <input> --config <c>  Split single IR file into multi-package project");
+    eprintln!("  slice <target> <file>       Slice minimal IR fragment for a target");
+    eprintln!("  refs <target> <file>        List references to a symbol");
+    eprintln!("  trace <target> <file>       Trace pipeline flow for a func or mod");
     eprintln!("  diff-impl <ir> <workspace>  Detect drift between IR and implementation");
     eprintln!("  export <type> <file>        Export visualizations");
     eprintln!("  codegen <platform> <file>   Generate CI/CD configuration");
@@ -664,11 +678,12 @@ fn print_diff_impl_usage() {
     eprintln!("  --mod <module>    Filter to specific module (with reference closure)");
     eprintln!("  --lang <lang>     Language to check (ts, rust, both) [default: both]");
     eprintln!("  --format <fmt>    Output format (text, json, md) [default: text]");
+    eprintln!("  --strategy <str>  Analysis strategy (static, lsp) [default: static]");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  surc diff-impl design.toml .");
     eprintln!("  surc diff-impl design.toml . --mod ui_workspace_pane");
-    eprintln!("  surc diff-impl design.toml . --lang rust --format json");
+    eprintln!("  surc diff-impl design.toml . --strategy lsp");
 }
 
 fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -686,6 +701,7 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut filter_mod: Option<&str> = None;
     let mut language = "both";
     let mut format = "text";
+    let mut strategy = "static";
 
     let mut i = 2;
     while i < args.len() {
@@ -725,6 +741,19 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             }
+            "--strategy" => {
+                if i + 1 < args.len() {
+                    strategy = &args[i + 1];
+                    if !matches!(strategy, "static" | "lsp") {
+                        eprintln!("Error: --strategy must be 'static' or 'lsp'");
+                        std::process::exit(1);
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("Error: --strategy requires a value");
+                    std::process::exit(1);
+                }
+            }
             _ => {
                 eprintln!("Error: Unknown option: {}", args[i]);
                 print_diff_impl_usage();
@@ -734,7 +763,7 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     // Run diff-impl analysis
-    let result = diff_impl(ir_file, workspace_root, filter_mod, language)?;
+    let result = diff_impl(ir_file, workspace_root, filter_mod, language, strategy)?;
 
     // Format and print output
     let output = match format {

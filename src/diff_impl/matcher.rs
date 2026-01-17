@@ -1,5 +1,6 @@
 use super::lsp_client::LspClient;
 use super::types::{DiffResult, ExpectedSymbol, FoundSymbol, SymbolKind};
+use super::static_analysis::StaticAnalyzer;
 use crate::ast::Section;
 use crate::parser::parse_file;
 use std::collections::{HashMap, HashSet};
@@ -12,17 +13,31 @@ pub fn diff_impl(
     workspace_root: &Path,
     filter_mod: Option<&str>,
     language: &str,
+    strategy: &str, // "lsp" or "tree-sitter"
 ) -> Result<DiffResult, Box<dyn Error>> {
     // 1. Parse IR file and extract expected symbols
     let expected = extract_expected_symbols(ir_file, filter_mod)?;
 
-    // 2. Query LSP for actual symbols
-    let found = query_workspace_symbols(workspace_root, language, &expected)?;
+    // 2. Query symbols based on strategy
+    let found = if strategy == "lsp" {
+        query_workspace_symbols_lsp(workspace_root, language, &expected)?
+    } else {
+        query_workspace_symbols_static(workspace_root, language)?
+    };
 
     // 3. Match expected vs found
     let result = match_symbols(&expected, &found, language);
 
     Ok(result)
+}
+
+/// Query symbols using static analysis (Tree-sitter)
+fn query_workspace_symbols_static(
+    workspace_root: &Path,
+    language: &str,
+) -> Result<Vec<FoundSymbol>, Box<dyn Error>> {
+    let mut analyzer = StaticAnalyzer::new()?;
+    analyzer.scan_workspace(workspace_root, language)
 }
 
 /// Extract expected symbols from IR file
@@ -143,7 +158,7 @@ fn compute_reference_closure(
 }
 
 /// Query LSP servers for workspace symbols
-fn query_workspace_symbols(
+fn query_workspace_symbols_lsp(
     workspace_root: &Path,
     language: &str,
     expected: &[ExpectedSymbol],
@@ -160,7 +175,7 @@ fn query_workspace_symbols(
         // Check if any expected symbols support this language
         let has_expected_for_lang = expected
             .iter()
-            .any(|exp| exp.matches_language(lang));
+            .any(|exp: &ExpectedSymbol| exp.matches_language(lang));
 
         if !has_expected_for_lang && language == "both" {
             continue;

@@ -6,6 +6,11 @@ This article introduces Surv IR, a design IR I created to address fundamental ch
 
 This article proposes how Surv IR can complement Vibe Coding's limitations. This is not a rejection of Vibe Coding, but rather a higher-order design methodology that builds upon it.
 
+LLM-assisted development has dramatically improved local productivity.
+But it has also made one thing worse: our ability to reason about global structure.
+
+Surv IR is an attempt to fix that.
+
 ## The Problem
 
 When Vibe Coding was first proposed, it was treated as an outlier. Many software engineers were skeptical of the approach, claiming it would produce spaghetti code, lack reproducibility, and make debugging impossible.
@@ -20,7 +25,7 @@ Software, at completion, carries massive dependency relationships. Yet, in princ
 
 ### AI-Friendly Languages
 
-Since the emergence of LLMs, there's been recurring discussion about languages suited to AI. I've seen claims that future AI will code in machine language, and recently, projects like Sui attempt to create AI-friendly programming languages.
+Since the emergence of LLMs, there's been recurring discussion about languages suited to AI. I've seen claims that future AI will code in machine language, and recently, projects like Sui attempt to create AI-friendly programming languages in Japan.
 
 Here's the distinction with Surv IR:
 
@@ -430,4 +435,8 @@ I believe software/application development's difficulty stems from:
 
 Until now, there was no means to solve this fundamental problem. LLMs are likely the technology to solve it, yet a descriptive framework was missing.
 
-I hope Surv IR contributes to this solution. I welcome your thoughts.
+I hope Surv IR contributes to this solution. 
+I welcome your thoughts.
+Does this resonate with your experience?
+How do you currently keep global structure in LLM-heavy projects?
+What would you want from a design-level IR?
