@@ -6,7 +6,9 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
-use survibe_parser_rs::{parse_surv_file, SurvFile, Section, SchemaSection, FuncSection, ModSection};
+use survibe_parser_rs::{
+    parse_surv_file, FuncSection, ModSection, SchemaSection, Section, SurvFile,
+};
 
 #[derive(Debug)]
 pub struct SplitConfig {
@@ -31,7 +33,7 @@ pub struct PackageConfig {
 #[derive(Debug, Clone)]
 pub struct ModuleAssignment {
     pub mod_name: String,  // "mod.user_api"
-    pub file_path: String,  // "user.toml"
+    pub file_path: String, // "user.toml"
 }
 
 #[derive(Debug, Clone)]
@@ -118,22 +120,25 @@ fn parse_split_config(path: &str) -> Result<SplitConfig, Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let doc = content.parse::<toml::Value>()?;
 
-    let split_section = doc.get("split")
-        .ok_or("Missing [split] section")?;
+    let split_section = doc.get("split").ok_or("Missing [split] section")?;
 
-    let output_dir = split_section.get("output_dir")
+    let output_dir = split_section
+        .get("output_dir")
         .and_then(|v| v.as_str())
         .ok_or("Missing split.output_dir")?;
 
-    let manifest = split_section.get("manifest")
+    let manifest = split_section
+        .get("manifest")
         .and_then(|v| v.as_str())
         .ok_or("Missing split.manifest")?;
 
-    let project_name = split_section.get("project_name")
+    let project_name = split_section
+        .get("project_name")
         .and_then(|v| v.as_str())
         .ok_or("Missing split.project_name")?;
 
-    let ir_root = split_section.get("ir_root")
+    let ir_root = split_section
+        .get("ir_root")
         .and_then(|v| v.as_str())
         .unwrap_or(output_dir);
 
@@ -155,7 +160,8 @@ fn parse_split_config(path: &str) -> Result<SplitConfig, Box<dyn Error>> {
         .unwrap_or(true);
 
     // Parse packages
-    let packages_section = doc.get("split")
+    let packages_section = doc
+        .get("split")
         .and_then(|s| s.get("packages"))
         .ok_or("Missing [split.packages]")?;
 
@@ -163,30 +169,40 @@ fn parse_split_config(path: &str) -> Result<SplitConfig, Box<dyn Error>> {
 
     if let Some(packages_table) = packages_section.as_table() {
         for (pkg_name, pkg_value) in packages_table {
-            let root = pkg_value.get("root")
+            let root = pkg_value
+                .get("root")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| format!("Missing root for package {}", pkg_name))?;
 
-            let namespace = pkg_value.get("namespace")
+            let namespace = pkg_value
+                .get("namespace")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| format!("Missing namespace for package {}", pkg_name))?;
 
-            let depends = pkg_value.get("depends")
+            let depends = pkg_value
+                .get("depends")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
 
-            let modules_arr = pkg_value.get("modules")
+            let modules_arr = pkg_value
+                .get("modules")
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| format!("Missing modules for package {}", pkg_name))?;
 
             let mut modules = Vec::new();
             for mod_entry in modules_arr {
-                let mod_name = mod_entry.get("mod")
+                let mod_name = mod_entry
+                    .get("mod")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'mod' in module entry")?;
 
-                let file_path = mod_entry.get("file")
+                let file_path = mod_entry
+                    .get("file")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'file' in module entry")?;
 
@@ -221,15 +237,27 @@ fn validate_config(ast: &SurvFile, config: &SplitConfig) -> Result<(), Box<dyn E
     // E_MOD_NOT_FOUND: Check all referenced modules exist
     for pkg in &config.packages {
         for mod_assignment in &pkg.modules {
-            let mod_key = mod_assignment.mod_name.strip_prefix("mod.")
-                .ok_or_else(|| format!("Module name must start with 'mod.': {}", mod_assignment.mod_name))?;
+            let mod_key = mod_assignment
+                .mod_name
+                .strip_prefix("mod.")
+                .ok_or_else(|| {
+                    format!(
+                        "Module name must start with 'mod.': {}",
+                        mod_assignment.mod_name
+                    )
+                })?;
 
-            let found = ast.sections.iter().any(|sec| {
-                matches!(sec, Section::Mod(mod_sec) if mod_sec.name == mod_key)
-            });
+            let found = ast
+                .sections
+                .iter()
+                .any(|sec| matches!(sec, Section::Mod(mod_sec) if mod_sec.name == mod_key));
 
             if !found {
-                return Err(format!("E_MOD_NOT_FOUND: Module '{}' not found in input IR", mod_assignment.mod_name).into());
+                return Err(format!(
+                    "E_MOD_NOT_FOUND: Module '{}' not found in input IR",
+                    mod_assignment.mod_name
+                )
+                .into());
             }
         }
     }
@@ -266,7 +294,9 @@ fn execute_split(ctx: &mut SplitContext) -> Result<(), Box<dyn Error>> {
 
             // Check for existing file
             if output_path.exists() {
-                return Err(format!("E_WRITE_CONFLICT: File already exists: {:?}", output_path).into());
+                return Err(
+                    format!("E_WRITE_CONFLICT: File already exists: {:?}", output_path).into(),
+                );
             }
 
             // Compute dependency closure for this module
@@ -274,27 +304,28 @@ fn execute_split(ctx: &mut SplitContext) -> Result<(), Box<dyn Error>> {
 
             // Track symbol usage
             for schema in &closure.schemas {
-                symbol_usage.entry(schema.clone())
+                symbol_usage
+                    .entry(schema.clone())
                     .or_insert_with(Vec::new)
                     .push(output_path.to_string_lossy().to_string());
             }
             for func in &closure.funcs {
-                symbol_usage.entry(func.clone())
+                symbol_usage
+                    .entry(func.clone())
                     .or_insert_with(Vec::new)
                     .push(output_path.to_string_lossy().to_string());
             }
 
             // Generate file content
-            let content = generate_file_content(
-                &ctx.input_ast,
-                pkg,
-                &mod_assignment.mod_name,
-                &closure,
-            )?;
+            let content =
+                generate_file_content(&ctx.input_ast, pkg, &mod_assignment.mod_name, &closure)?;
 
             // Write file
             fs::write(&output_path, content)?;
-            println!("  ✓ Created {:?} ({})", output_path, mod_assignment.mod_name);
+            println!(
+                "  ✓ Created {:?} ({})",
+                output_path, mod_assignment.mod_name
+            );
         }
     }
 
@@ -313,11 +344,14 @@ fn execute_split(ctx: &mut SplitContext) -> Result<(), Box<dyn Error>> {
 }
 
 fn compute_closure(ast: &SurvFile, mod_name: &str) -> Result<DependencyClosure, Box<dyn Error>> {
-    let mod_key = mod_name.strip_prefix("mod.")
+    let mod_key = mod_name
+        .strip_prefix("mod.")
         .ok_or_else(|| format!("Invalid module name: {}", mod_name))?;
 
     // Find the module
-    let mod_section = ast.sections.iter()
+    let mod_section = ast
+        .sections
+        .iter()
         .find_map(|sec| {
             if let Section::Mod(mod_sec) = sec {
                 if mod_sec.name == mod_key {
@@ -346,7 +380,7 @@ fn compute_closure(ast: &SurvFile, mod_name: &str) -> Result<DependencyClosure, 
         }
     }
 
-    for pipeline_item in &mod_section.pipeline {
+    for pipeline_item in mod_section.get_pipeline_calls() {
         if let Some(func_name) = pipeline_item.strip_prefix("func.") {
             closure.funcs.insert(func_name.to_string());
         }
@@ -397,7 +431,11 @@ fn expand_func_closure(ast: &SurvFile, func_name: &str, closure: &mut Dependency
     }
 }
 
-fn expand_schema_closure(ast: &SurvFile, schema_name: &str, closure: &mut DependencyClosure) -> bool {
+fn expand_schema_closure(
+    ast: &SurvFile,
+    schema_name: &str,
+    closure: &mut DependencyClosure,
+) -> bool {
     let mut added = false;
 
     for sec in &ast.sections {
@@ -446,7 +484,9 @@ fn generate_file_content(
     // Note: In Surv IR v1.1, require is at file level, not in mod section
     // We'll copy from the original input file's requires
     if !ast.requires.is_empty() {
-        let require_strings: Vec<String> = ast.requires.iter()
+        let require_strings: Vec<String> = ast
+            .requires
+            .iter()
             .map(|r| format!("\"{}\"", r.target))
             .collect();
         output.push_str(&format!("require = [{}]\n", require_strings.join(", ")));
@@ -459,9 +499,11 @@ fn generate_file_content(
     schema_names.sort();
 
     for schema_name in schema_names {
-        if let Some(Section::Schema(schema_sec)) = ast.sections.iter().find(|s| {
-            matches!(s, Section::Schema(sc) if sc.name == *schema_name)
-        }) {
+        if let Some(Section::Schema(schema_sec)) = ast
+            .sections
+            .iter()
+            .find(|s| matches!(s, Section::Schema(sc) if sc.name == *schema_name))
+        {
             output.push_str(&format!("[schema.{}]\n", schema_sec.name));
             output.push_str(&format!("kind = \"{}\"\n", schema_sec.kind));
             if !schema_sec.role.is_empty() {
@@ -475,7 +517,9 @@ fn generate_file_content(
             }
             if !schema_sec.fields.is_empty() {
                 // Format fields as inline TOML map
-                let fields_vec: Vec<String> = schema_sec.fields.iter()
+                let fields_vec: Vec<String> = schema_sec
+                    .fields
+                    .iter()
                     .map(|(k, v)| format!("{} = \"{}\"", k, v))
                     .collect();
                 output.push_str(&format!("fields = {{{}}}\n", fields_vec.join(", ")));
@@ -489,9 +533,11 @@ fn generate_file_content(
     func_names.sort();
 
     for func_name in func_names {
-        if let Some(Section::Func(func_sec)) = ast.sections.iter().find(|s| {
-            matches!(s, Section::Func(fc) if fc.name == *func_name)
-        }) {
+        if let Some(Section::Func(func_sec)) = ast
+            .sections
+            .iter()
+            .find(|s| matches!(s, Section::Func(fc) if fc.name == *func_name))
+        {
             output.push_str(&format!("[func.{}]\n", func_sec.name));
             if !func_sec.intent.is_empty() {
                 output.push_str(&format!("intent = \"{}\"\n", func_sec.intent));
@@ -508,9 +554,11 @@ fn generate_file_content(
 
     // Module
     let mod_key = mod_name.strip_prefix("mod.").unwrap();
-    if let Some(Section::Mod(mod_sec)) = ast.sections.iter().find(|s| {
-        matches!(s, Section::Mod(ms) if ms.name == mod_key)
-    }) {
+    if let Some(Section::Mod(mod_sec)) = ast
+        .sections
+        .iter()
+        .find(|s| matches!(s, Section::Mod(ms) if ms.name == mod_key))
+    {
         output.push_str(&format!("[mod.{}]\n", mod_sec.name));
         if !mod_sec.purpose.is_empty() {
             output.push_str(&format!("purpose = \"{}\"\n", mod_sec.purpose));

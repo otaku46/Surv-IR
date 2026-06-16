@@ -1,0 +1,64 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.LogEntry]
+kind = "node"
+role = "diagnostic"
+fields = {message = "string", stream = "stdout|stderr|system", ts = "timestamp"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.Task]
+kind = "node"
+role = "data"
+fields = {finished_at = "timestamp?", kind = "agent|surv_check|tests|git", logs = "LogEntry[]", started_at = "timestamp?", status = "queued|running|succeeded|failed|canceled", task_id = "string", title = "string"}
+
+[schema.TaskQueueState]
+kind = "node"
+role = "data"
+fields = {active = "Task?", completed = "Task[]", queue = "Task[]"}
+
+[schema.TestRequest]
+kind = "node"
+role = "request"
+fields = {command = "string", profile = "string"}
+
+[schema.TestResult]
+kind = "node"
+role = "diagnostic"
+fields = {log = "string", status = "pass|fail"}
+
+[func.backend_run_tests]
+intent = "Run project tests (cargo test / npm test etc.) for gating"
+input = ["schema.AppState", "schema.Outcome_AppState", "schema.TestRequest"]
+output = ["schema.Outcome_TestResult"]
+
+[func.backend_task_append_log]
+intent = "Append a log entry to the active task (streaming output)"
+input = ["schema.AppState", "schema.LogEntry"]
+output = ["schema.AppState"]
+
+[mod.backend_tasks]
+purpose = "Rust(Tauri) backend: task runner + streaming logs"
+schemas = ["schema.AppState", "schema.TaskQueueState", "schema.Task", "schema.LogEntry", "schema.TestRequest", "schema.TestResult", "schema.Outcome_TestResult", "schema.Outcome_AppState", "schema.Diagnostic"]
+funcs = ["func.backend_run_tests", "func.backend_task_append_log"]
+pipeline = ["func.backend_run_tests"]
+

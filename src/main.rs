@@ -4,20 +4,20 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use survibe_parser_rs::codegen::{GitHubActionsGenerator, GitLabCIGenerator};
 use survibe_parser_rs::{
     check_deploy_file, check_project, check_surv_file, load_project, parse_deploy_file,
     parse_surv_file, HtmlExporter, MermaidExporter, ProjectAST, Section,
 };
-use survibe_parser_rs::codegen::{GitHubActionsGenerator, GitLabCIGenerator};
 
-mod status_commands;
 mod deps_commands;
-mod split_commands;
 mod query_commands;
-use status_commands::run_status;
+mod split_commands;
+mod status_commands;
 use deps_commands::run_deps;
-use split_commands::run_split;
 use query_commands::{run_refs, run_slice, run_trace};
+use split_commands::run_split;
+use status_commands::run_status;
 
 fn main() {
     if let Err(err) = run() {
@@ -81,7 +81,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         "export" => {
             if args.len() < 3 {
                 eprintln!("Usage: surc export <type> <file>");
-                eprintln!("Types: pipeline, modules, schemas, module-detail, deploy-mermaid, deploy-html");
+                eprintln!(
+                    "Types: pipeline, modules, schemas, module-detail, deploy-mermaid, deploy-html"
+                );
                 std::process::exit(1);
             }
             run_export(&args[2..])
@@ -105,9 +107,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             run_inspect(&args[2], &args[3])
         }
-        "status" => {
-            run_status(&args[2..])
-        }
+        "status" => run_status(&args[2..]),
         "deps" => {
             if args.len() < 3 {
                 eprintln!("Usage: surc deps <surv.toml> [options]");
@@ -122,15 +122,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             run_split(&args[2..])
         }
-        "slice" => {
-            run_slice(&args[2..])
-        }
-        "refs" => {
-            run_refs(&args[2..])
-        }
-        "trace" => {
-            run_trace(&args[2..])
-        }
+        "slice" => run_slice(&args[2..]),
+        "refs" => run_refs(&args[2..]),
+        "trace" => run_trace(&args[2..]),
         "diff-impl" => {
             if args.len() < 4 {
                 print_diff_impl_usage();
@@ -239,7 +233,9 @@ fn print_export_usage() {
     eprintln!("      Example: surc export deploy-html deploy.toml > pipeline.html");
     eprintln!();
     eprintln!("Note: Use 'surv.toml' for project-level exports (modules, schemas, html)");
-    eprintln!("      Use individual '.toml' files for single-file exports (pipeline, module-detail)");
+    eprintln!(
+        "      Use individual '.toml' files for single-file exports (pipeline, module-detail)"
+    );
 }
 
 fn run_parse(filename: &str) -> Result<(), Box<dyn Error>> {
@@ -580,7 +576,10 @@ fn run_inspect(module_name: &str, filename: &str) -> Result<(), Box<dyn Error>> 
     let module = match module {
         Some(m) => m,
         None => {
-            eprintln!("Error: Module 'mod.{}' not found in {}", module_name, filename);
+            eprintln!(
+                "Error: Module 'mod.{}' not found in {}",
+                module_name, filename
+            );
             eprintln!();
             eprintln!("Available modules:");
             for section in &parsed.sections {
@@ -620,9 +619,10 @@ fn run_inspect(module_name: &str, filename: &str) -> Result<(), Box<dyn Error>> 
     }
 
     // Print pipeline
-    if !module.pipeline.is_empty() {
-        println!("Pipeline ({} steps):", module.pipeline.len());
-        for (i, step) in module.pipeline.iter().enumerate() {
+    let pipeline_calls = module.get_pipeline_calls();
+    if !pipeline_calls.is_empty() {
+        println!("Pipeline ({} steps):", pipeline_calls.len());
+        for (i, step) in pipeline_calls.iter().enumerate() {
             if i == 0 {
                 println!("  {}", step);
             } else {
@@ -664,30 +664,42 @@ fn run_inspect(module_name: &str, filename: &str) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-
 fn print_diff_impl_usage() {
-    eprintln!("Usage: surc diff-impl <design.toml> <workspace_root> [options]");
+    eprintln!("Usage: surc diff-impl <design.toml|surv.toml> <workspace_root> [options]");
     eprintln!();
     eprintln!("Detect drift between Surv IR specifications and actual implementation.");
     eprintln!();
     eprintln!("Arguments:");
-    eprintln!("  <design.toml>     Path to Surv IR file");
+    eprintln!("  <design.toml>     Path to a Surv IR file or project manifest");
     eprintln!("  <workspace_root>  Path to codebase root directory");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --mod <module>    Filter to specific module (with reference closure)");
-    eprintln!("  --lang <lang>     Language to check (ts, rust, both) [default: both]");
-    eprintln!("  --format <fmt>    Output format (text, json, md) [default: text]");
+    eprintln!(
+        "  --lang <lang>     Language to check (ts, rust, c, zig, both, all) [default: both]"
+    );
+    eprintln!("  --format <fmt>    Output format (text, json, md, gha, skeleton, design-skeleton, code-skeleton) [default: text]");
     eprintln!("  --strategy <str>  Analysis strategy (static, lsp) [default: static]");
+    eprintln!("  --threshold <n>   Maximum allowed drift rate, 0.0-1.0 [default: 0.0]");
+    eprintln!("  --exclude-tests   Exclude test-only symbols from design-skeleton output");
+    eprintln!(
+        "  --dedup <mode>    Deduplicate skeleton symbols by name, path, or none [default: path]"
+    );
+    eprintln!("  --emit <items>    Comma-separated skeleton sections: schemas,funcs,mods,mapping");
+    eprintln!("  --mapping <file>  Accept mapping path for vNext compatibility");
+    eprintln!("  --group-by <mode> Accept grouping mode (file-module, crate-module, mapping)");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  surc diff-impl design.toml .");
     eprintln!("  surc diff-impl design.toml . --mod ui_workspace_pane");
+    eprintln!("  surc diff-impl design.toml . --format gha");
+    eprintln!("  surc diff-impl design.toml . --format skeleton");
+    eprintln!("  surc diff-impl design.toml . --format design-skeleton --exclude-tests");
     eprintln!("  surc diff-impl design.toml . --strategy lsp");
 }
 
 fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
-    use survibe_parser_rs::diff_impl::{diff_impl, reporter};
+    use survibe_parser_rs::diff_impl::{diff_impl, reporter, DedupMode, DesignSkeletonOptions};
 
     if args.len() < 2 {
         print_diff_impl_usage();
@@ -702,6 +714,10 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut language = "both";
     let mut format = "text";
     let mut strategy = "static";
+    let mut threshold = 0.0;
+    let mut design_options = DesignSkeletonOptions::default();
+    let mut mapping_path: Option<&str> = None;
+    let mut _group_by: Option<&str> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -718,8 +734,10 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
             "--lang" => {
                 if i + 1 < args.len() {
                     language = &args[i + 1];
-                    if !matches!(language, "ts" | "rust" | "both") {
-                        eprintln!("Error: --lang must be 'ts', 'rust', or 'both'");
+                    if !matches!(language, "ts" | "rust" | "c" | "zig" | "both" | "all") {
+                        eprintln!(
+                            "Error: --lang must be 'ts', 'rust', 'c', 'zig', 'both', or 'all'"
+                        );
                         std::process::exit(1);
                     }
                     i += 2;
@@ -731,13 +749,91 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
             "--format" => {
                 if i + 1 < args.len() {
                     format = &args[i + 1];
-                    if !matches!(format, "text" | "json" | "md") {
-                        eprintln!("Error: --format must be 'text', 'json', or 'md'");
+                    if !matches!(
+                        format,
+                        "text"
+                            | "json"
+                            | "md"
+                            | "gha"
+                            | "skeleton"
+                            | "design-skeleton"
+                            | "code-skeleton"
+                    ) {
+                        eprintln!(
+                            "Error: --format must be 'text', 'json', 'md', 'gha', 'skeleton', 'design-skeleton', or 'code-skeleton'"
+                        );
                         std::process::exit(1);
                     }
                     i += 2;
                 } else {
                     eprintln!("Error: --format requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--exclude-tests" => {
+                design_options.exclude_tests = true;
+                i += 1;
+            }
+            "--dedup" => {
+                if i + 1 < args.len() {
+                    design_options.dedup = DedupMode::parse(&args[i + 1])
+                        .ok_or("Error: --dedup must be name, path, or none")?;
+                    i += 2;
+                } else {
+                    eprintln!("Error: --dedup requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--emit" => {
+                if i + 1 < args.len() {
+                    design_options.emit_schemas = false;
+                    design_options.emit_funcs = false;
+                    design_options.emit_mods = false;
+                    design_options.emit_mapping = false;
+
+                    for item in args[i + 1].split(',') {
+                        match item.trim() {
+                            "schemas" => design_options.emit_schemas = true,
+                            "funcs" => design_options.emit_funcs = true,
+                            "mods" => design_options.emit_mods = true,
+                            "mapping" => design_options.emit_mapping = true,
+                            "" => {}
+                            other => {
+                                return Err(format!(
+                                    "Error: unknown --emit item '{}'; expected schemas, funcs, mods, mapping",
+                                    other
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("Error: --emit requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--mapping" => {
+                if i + 1 < args.len() {
+                    mapping_path = Some(&args[i + 1]);
+                    i += 2;
+                } else {
+                    eprintln!("Error: --mapping requires a file path");
+                    std::process::exit(1);
+                }
+            }
+            "--group-by" => {
+                if i + 1 < args.len() {
+                    _group_by = Some(&args[i + 1]);
+                    if !matches!(_group_by, Some("file-module" | "crate-module" | "mapping")) {
+                        eprintln!(
+                            "Error: --group-by must be file-module, crate-module, or mapping"
+                        );
+                        std::process::exit(1);
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("Error: --group-by requires a value");
                     std::process::exit(1);
                 }
             }
@@ -754,6 +850,20 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             }
+            "--threshold" => {
+                if i + 1 < args.len() {
+                    threshold = args[i + 1]
+                        .parse::<f64>()
+                        .map_err(|_| "Error: --threshold must be a number between 0.0 and 1.0")?;
+                    if !(0.0..=1.0).contains(&threshold) {
+                        return Err("Error: --threshold must be between 0.0 and 1.0".into());
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("Error: --threshold requires a value");
+                    std::process::exit(1);
+                }
+            }
             _ => {
                 eprintln!("Error: Unknown option: {}", args[i]);
                 print_diff_impl_usage();
@@ -763,19 +873,31 @@ fn run_diff_impl(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     // Run diff-impl analysis
-    let result = diff_impl(ir_file, workspace_root, filter_mod, language, strategy)?;
+    let mapping_path = mapping_path.map(Path::new);
+    let result = diff_impl(
+        ir_file,
+        workspace_root,
+        filter_mod,
+        language,
+        strategy,
+        mapping_path,
+    )?;
 
     // Format and print output
     let output = match format {
         "json" => reporter::report_json(&result),
         "md" => reporter::report_markdown(&result),
+        "gha" => reporter::report_github_actions(&result),
+        "skeleton" => reporter::report_skeletons(&result),
+        "design-skeleton" => reporter::report_design_skeleton(&result, &design_options),
+        "code-skeleton" => reporter::report_code_skeleton(&result, language),
         _ => reporter::report_text(&result),
     };
 
     println!("{}", output);
 
-    // Exit with non-zero code if issues detected
-    if result.has_issues() {
+    // Exit with non-zero code if drift exceeds the configured threshold.
+    if result.drift_rate() > threshold {
         std::process::exit(1);
     }
 

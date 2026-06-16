@@ -1,0 +1,144 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.ChatMessage]
+kind = "node"
+role = "data"
+fields = {content = "string", created_at = "timestamp", id = "string", role = "user|assistant|system"}
+
+[schema.ChatState]
+kind = "node"
+role = "data"
+fields = {draft = "string", messages = "ChatMessage[]", mode = "design|spec|ir|impl", scope = "AgentScope", session_id = "string"}
+
+[schema.ChatSummary]
+kind = "node"
+role = "data"
+fields = {content = "string", strategy = "full|summary"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.DiagnosticUIContext]
+kind = "node"
+role = "request"
+fields = {label = "string"}
+
+[schema.IRFixRequest]
+kind = "node"
+role = "request"
+fields = {attempt = "int", diagnostics = "Diagnostic[]", ir = "SurvIRFile", max_attempts = "int"}
+
+[schema.IRGenerationRequest]
+kind = "node"
+role = "request"
+fields = {constraints = "string[]", ir_path = "string?", pipeline_mode = "linear", spec = "SpecDocument"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_IRFixResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "IRFixResult?"}
+
+[schema.Outcome_IRGenerationResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "IRGenerationResult?"}
+
+[schema.Outcome_ScopeUpdateResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ScopeUpdateResult?"}
+
+[schema.Outcome_SpecGenerationResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "SpecGenerationResult?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.SpecDocument]
+kind = "node"
+role = "spec"
+fields = {content = "string", path = "string?", source = "chat|file|manual", version = "int?"}
+
+[schema.SpecGenerationRequest]
+kind = "node"
+role = "request"
+fields = {messages = "ChatMessage[]?", notes = "string[]?", source = "chat_log|file|manual", spec_path = "string?", summary = "ChatSummary?"}
+
+[schema.SurvCheckRequest]
+kind = "node"
+role = "request"
+fields = {file_path = "string", workspace_root = "string"}
+
+[schema.SurvCheckResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", is_valid = "bool", summary = "string"}
+
+[func.backend_fix_ir_with_diagnostics]
+intent = "LLM: patch IR using diagnostics (checker-driven loop, max attempts)"
+input = ["schema.IRFixRequest"]
+output = ["schema.Outcome_IRFixResult"]
+
+[func.backend_generate_ir]
+intent = "LLM: compile SpecDocument to Surv IR (valid TOML, linear pipeline)"
+input = ["schema.IRGenerationRequest"]
+output = ["schema.Outcome_IRGenerationResult"]
+
+[func.backend_generate_spec]
+intent = "LLM: compile chat log/summary into SpecDocument (minimal, checker-oriented)"
+input = ["schema.SpecGenerationRequest"]
+output = ["schema.Outcome_SpecGenerationResult"]
+
+[func.backend_surv_check]
+intent = "Run Surv IR parse/check (surc) for gating"
+input = ["schema.AppState", "schema.Outcome_AppState"]
+output = ["schema.Outcome_AppState"]
+
+[func.ui_generate_ir]
+intent = "Create IR generation request from SpecDocument"
+input = ["schema.AppState", "schema.SpecDocument"]
+output = ["schema.IRGenerationRequest"]
+
+[func.ui_generate_spec]
+intent = "Create spec generation request from chat log or selected file"
+input = ["schema.AppState", "schema.ChatState"]
+output = ["schema.SpecGenerationRequest"]
+
+[func.ui_show_diagnostics_with_context]
+intent = "Present diagnostics with a UI context label (e.g. after_workspace_open)"
+input = ["schema.AppState", "schema.DiagnosticUIContext", "schema.Outcome_AppState", "schema.Outcome_Document", "schema.Outcome_AgentRunResult", "schema.Outcome_ScopeUpdateResult", "schema.Outcome_TestResult"]
+output = ["schema.AppState"]
+
+[mod.spec_ir_flow]
+purpose = "Spec->IR compiler flow: chat -> spec -> IR -> check -> fix"
+schemas = ["schema.ChatState", "schema.ChatMessage", "schema.ChatSummary", "schema.SpecGenerationRequest", "schema.Outcome_SpecGenerationResult", "schema.SpecDocument", "schema.IRGenerationRequest", "schema.Outcome_IRGenerationResult", "schema.SurvCheckRequest", "schema.SurvCheckResult", "schema.IRFixRequest", "schema.Outcome_IRFixResult", "schema.DiagnosticUIContext", "schema.Diagnostic"]
+funcs = ["func.ui_generate_spec", "func.backend_generate_spec", "func.ui_generate_ir", "func.backend_generate_ir", "func.backend_surv_check", "func.backend_fix_ir_with_diagnostics", "func.ui_show_diagnostics_with_context"]
+pipeline = ["func.ui_generate_spec", "func.backend_generate_spec", "func.ui_generate_ir", "func.backend_generate_ir", "func.backend_surv_check", "func.backend_fix_ir_with_diagnostics", "func.ui_show_diagnostics_with_context"]
+

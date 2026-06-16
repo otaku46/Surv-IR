@@ -1,0 +1,154 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.ChatMessage]
+kind = "node"
+role = "data"
+fields = {content = "string", created_at = "timestamp", id = "string", role = "user|assistant|system"}
+
+[schema.ChatReply]
+kind = "node"
+role = "response"
+fields = {content = "string"}
+
+[schema.ChatSendRequest]
+kind = "node"
+role = "request"
+fields = {api_key = "string?", message = "string", mode = "design|spec|ir|impl", model = "string?"}
+
+[schema.ChatState]
+kind = "node"
+role = "data"
+fields = {draft = "string", messages = "ChatMessage[]", mode = "design|spec|ir|impl", scope = "AgentScope", session_id = "string"}
+
+[schema.ChatSummary]
+kind = "node"
+role = "data"
+fields = {content = "string", strategy = "full|summary"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.DiagnosticUIContext]
+kind = "node"
+role = "request"
+fields = {label = "string"}
+
+[schema.IRGenerationRequest]
+kind = "node"
+role = "request"
+fields = {constraints = "string[]", ir_path = "string?", pipeline_mode = "linear", spec = "SpecDocument"}
+
+[schema.IRGenerationResult]
+kind = "node"
+role = "response"
+fields = {ir = "SurvIRFile", warnings = "string[]"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_ChatReply]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ChatReply?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_IRGenerationResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "IRGenerationResult?"}
+
+[schema.Outcome_ScopeUpdateResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ScopeUpdateResult?"}
+
+[schema.Outcome_SpecGenerationResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "SpecGenerationResult?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.SpecDocument]
+kind = "node"
+role = "spec"
+fields = {content = "string", path = "string?", source = "chat|file|manual", version = "int?"}
+
+[schema.SpecGenerationRequest]
+kind = "node"
+role = "request"
+fields = {messages = "ChatMessage[]?", notes = "string[]?", source = "chat_log|file|manual", spec_path = "string?", summary = "ChatSummary?"}
+
+[schema.SpecGenerationResult]
+kind = "node"
+role = "response"
+fields = {spec = "SpecDocument", warnings = "string[]"}
+
+[func.backend_chat_send]
+intent = "Tauri command: send chat message (OpenAI API)"
+input = ["schema.AppState", "schema.ChatSendRequest"]
+output = ["schema.Outcome_ChatReply"]
+
+[func.backend_generate_ir]
+intent = "LLM: compile SpecDocument to Surv IR (valid TOML, linear pipeline)"
+input = ["schema.IRGenerationRequest"]
+output = ["schema.Outcome_IRGenerationResult"]
+
+[func.backend_generate_spec]
+intent = "LLM: compile chat log/summary into SpecDocument (minimal, checker-oriented)"
+input = ["schema.SpecGenerationRequest"]
+output = ["schema.Outcome_SpecGenerationResult"]
+
+[func.ui_append_chat_reply]
+intent = "Append assistant reply to chat session"
+input = ["schema.AppState", "schema.Outcome_ChatReply"]
+output = ["schema.AppState"]
+
+[func.ui_generate_ir]
+intent = "Create IR generation request from SpecDocument"
+input = ["schema.AppState", "schema.SpecDocument"]
+output = ["schema.IRGenerationRequest"]
+
+[func.ui_generate_spec]
+intent = "Create spec generation request from chat log or selected file"
+input = ["schema.AppState", "schema.ChatState"]
+output = ["schema.SpecGenerationRequest"]
+
+[func.ui_send_chat_message]
+intent = "Append user message to chat session"
+input = ["schema.AppState"]
+output = ["schema.AppState", "schema.ChatSendRequest"]
+
+[func.ui_show_diagnostics_with_context]
+intent = "Present diagnostics with a UI context label (e.g. after_workspace_open)"
+input = ["schema.AppState", "schema.DiagnosticUIContext", "schema.Outcome_AppState", "schema.Outcome_Document", "schema.Outcome_AgentRunResult", "schema.Outcome_ScopeUpdateResult", "schema.Outcome_TestResult"]
+output = ["schema.AppState"]
+
+[mod.ui_chat_pane]
+purpose = "Right pane: chat session + spec/ir compile controls"
+schemas = ["schema.AppState", "schema.ChatState", "schema.ChatMessage", "schema.ChatSendRequest", "schema.ChatReply", "schema.ChatSummary", "schema.SpecDocument", "schema.SpecGenerationRequest", "schema.SpecGenerationResult", "schema.IRGenerationRequest", "schema.IRGenerationResult", "schema.Outcome_ChatReply", "schema.Outcome_SpecGenerationResult", "schema.Outcome_IRGenerationResult", "schema.DiagnosticUIContext", "schema.Diagnostic"]
+funcs = ["func.ui_send_chat_message", "func.backend_chat_send", "func.ui_append_chat_reply", "func.ui_generate_spec", "func.backend_generate_spec", "func.ui_generate_ir", "func.backend_generate_ir", "func.ui_show_diagnostics_with_context"]
+pipeline = ["func.ui_send_chat_message", "func.backend_chat_send", "func.ui_append_chat_reply"]
+

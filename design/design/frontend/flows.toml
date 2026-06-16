@@ -1,0 +1,99 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AgentRunRequest]
+kind = "node"
+role = "request"
+fields = {constraints = "string[]", file_list = "string[]", inputs = "string", kind = "Design|Spec|IR|Plan|Impl|Review", scope = "string"}
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.DiagnosticUIContext]
+kind = "node"
+role = "request"
+fields = {label = "string"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_ScopeUpdateResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ScopeUpdateResult?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.ScopeUpdateRequest]
+kind = "node"
+role = "request"
+fields = {exclude_globs = "string[]", files = "string[]", include_globs = "string[]", preset = "workspace|folder|files|selection|mod|package", roots = "string[]"}
+
+[schema.TestRequest]
+kind = "node"
+role = "request"
+fields = {command = "string", profile = "string"}
+
+[func.backend_agent_run]
+intent = "Tauri command: call LLM/agent with scoped files and constraints"
+input = ["schema.AppState", "schema.AgentRunRequest"]
+output = ["schema.Outcome_AgentRunResult"]
+
+[func.backend_apply_patch]
+intent = "Apply patch to workspace and refresh affected documents/tree"
+input = ["schema.AppState", "schema.Outcome_AgentRunResult"]
+output = ["schema.Outcome_AppState"]
+
+[func.backend_run_tests]
+intent = "Run project tests (cargo test / npm test etc.) for gating"
+input = ["schema.AppState", "schema.Outcome_AppState", "schema.TestRequest"]
+output = ["schema.Outcome_TestResult"]
+
+[func.backend_surv_check]
+intent = "Run Surv IR parse/check (surc) for gating"
+input = ["schema.AppState", "schema.Outcome_AppState"]
+output = ["schema.Outcome_AppState"]
+
+[func.ui_create_agent_request]
+intent = "Create agent run request from chat input (future)"
+input = ["schema.AppState"]
+output = ["schema.AppState", "schema.AgentRunRequest"]
+
+[func.ui_show_diagnostics_with_context]
+intent = "Present diagnostics with a UI context label (e.g. after_workspace_open)"
+input = ["schema.AppState", "schema.DiagnosticUIContext", "schema.Outcome_AppState", "schema.Outcome_Document", "schema.Outcome_AgentRunResult", "schema.Outcome_ScopeUpdateResult", "schema.Outcome_TestResult"]
+output = ["schema.AppState"]
+
+[func.ui_update_scope]
+intent = "Update scope selection for agent runs and show preview"
+input = ["schema.AppState", "schema.ScopeUpdateRequest"]
+output = ["schema.AppState", "schema.Outcome_ScopeUpdateResult"]
+
+[mod.app_mvp_flow]
+purpose = "MVP happy path: scope -> chat -> agent -> patch -> check -> tests"
+schemas = ["schema.AppState", "schema.ScopeUpdateRequest", "schema.Outcome_ScopeUpdateResult", "schema.AgentRunRequest", "schema.Outcome_AgentRunResult", "schema.Outcome_AppState", "schema.TestRequest", "schema.Outcome_TestResult", "schema.DiagnosticUIContext", "schema.Diagnostic"]
+funcs = ["func.ui_update_scope", "func.ui_create_agent_request", "func.backend_agent_run", "func.backend_apply_patch", "func.backend_surv_check", "func.backend_run_tests", "func.ui_show_diagnostics_with_context"]
+pipeline = ["func.ui_update_scope", "func.ui_create_agent_request", "func.backend_agent_run", "func.backend_apply_patch", "func.backend_surv_check", "func.backend_run_tests", "func.ui_show_diagnostics_with_context"]
+

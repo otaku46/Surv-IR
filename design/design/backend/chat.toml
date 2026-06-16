@@ -1,0 +1,39 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.ChatReply]
+kind = "node"
+role = "response"
+fields = {content = "string"}
+
+[schema.ChatSendRequest]
+kind = "node"
+role = "request"
+fields = {api_key = "string?", message = "string", mode = "design|spec|ir|impl", model = "string?"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.Outcome_ChatReply]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ChatReply?"}
+
+[func.backend_chat_send]
+intent = "Tauri command: send chat message (OpenAI API)"
+input = ["schema.AppState", "schema.ChatSendRequest"]
+output = ["schema.Outcome_ChatReply"]
+
+[mod.backend_chat]
+purpose = "Rust(Tauri) backend: chat via OpenAI API"
+schemas = ["schema.AppState", "schema.ChatSendRequest", "schema.ChatReply", "schema.Outcome_ChatReply", "schema.Diagnostic"]
+funcs = ["func.backend_chat_send"]
+pipeline = ["func.backend_chat_send"]
+

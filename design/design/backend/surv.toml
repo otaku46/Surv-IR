@@ -1,0 +1,64 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_SurvExport]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "SurvExportResult?"}
+
+[schema.SurvCheckRequest]
+kind = "node"
+role = "request"
+fields = {file_path = "string", workspace_root = "string"}
+
+[schema.SurvCheckResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", is_valid = "bool", summary = "string"}
+
+[schema.SurvExportRequest]
+kind = "node"
+role = "request"
+fields = {export_type = "pipeline|modules|module-detail", file_path = "string", module_name = "string?", workspace_root = "string"}
+
+[schema.SurvExportResult]
+kind = "node"
+role = "response"
+fields = {export_type = "string", mermaid_code = "string"}
+
+[schema.SurvIRFile]
+kind = "node"
+role = "ir"
+fields = {content = "string", path = "string"}
+
+[func.backend_surv_check]
+intent = "Run Surv IR parse/check (surc) for gating"
+input = ["schema.AppState", "schema.Outcome_AppState"]
+output = ["schema.Outcome_AppState"]
+
+[func.backend_surv_export_graph]
+intent = "Export Surv IR graph as Mermaid diagram (surc export)"
+input = ["schema.SurvExportRequest"]
+output = ["schema.Outcome_SurvExport"]
+
+[mod.backend_surv]
+purpose = "Rust(Tauri) backend: Surv IR validation (surc) and graph export"
+schemas = ["schema.AppState", "schema.SurvIRFile", "schema.SurvCheckRequest", "schema.SurvCheckResult", "schema.SurvExportRequest", "schema.SurvExportResult", "schema.Outcome_AppState", "schema.Outcome_SurvExport", "schema.Diagnostic"]
+funcs = ["func.backend_surv_check", "func.backend_surv_export_graph"]
+pipeline = ["func.backend_surv_check"]
+

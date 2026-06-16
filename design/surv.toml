@@ -1,0 +1,14 @@
+[project]
+name = "plasm-ide"
+
+[paths]
+ir_root = "design"
+
+[packages.backend]
+root = "design/backend"
+namespace = "plasm.backend"
+
+[packages.frontend]
+root = "design/frontend"
+namespace = "plasm.ui"
+

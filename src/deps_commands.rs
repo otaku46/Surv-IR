@@ -1,8 +1,8 @@
-use survibe_parser_rs::{load_project, Manifest, ProjectAST, Section};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use survibe_parser_rs::{load_project, Manifest, ProjectAST, Section};
 
 enum Scope {
     Packages,
@@ -141,7 +141,11 @@ fn show_package_modules(
         .get(package_name)
         .ok_or_else(|| format!("Package '{}' not found", package_name))?;
 
-    println!("Package: {} (namespace: {})", package_name, pkg.namespace.as_deref().unwrap_or("<none>"));
+    println!(
+        "Package: {} (namespace: {})",
+        package_name,
+        pkg.namespace.as_deref().unwrap_or("<none>")
+    );
     println!();
 
     // Build module to package mapping
@@ -268,7 +272,10 @@ fn show_module_deps(
                     println!("  └─> {}", dependent.from_mod);
                 }
                 Some(dependent_pkg) => {
-                    println!("  └─> {} (in {} package)", dependent.from_mod, dependent_pkg);
+                    println!(
+                        "  └─> {} (in {} package)",
+                        dependent.from_mod, dependent_pkg
+                    );
                 }
                 None => {
                     println!("  └─> {} (package unknown)", dependent.from_mod);

@@ -70,13 +70,55 @@ pub struct FuncSection {
     pub impl_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum PipelineStep {
+    Call(String),
+    Sequential(Vec<PipelineStep>),
+    Parallel(Vec<PipelineStep>),
+    Branch {
+        condition: String,
+        on_true: Box<PipelineStep>,
+        on_false: Box<PipelineStep>,
+    },
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ModSection {
     pub name: String,
     pub purpose: String,
     pub schemas: Vec<String>,
     pub funcs: Vec<String>,
-    pub pipeline: Vec<String>,
+    pub pipeline: Vec<PipelineStep>,
+    pub submods: Vec<String>,
+}
+
+impl ModSection {
+    pub fn get_pipeline_calls(&self) -> Vec<String> {
+        let mut calls = Vec::new();
+        for step in &self.pipeline {
+            step.collect_calls(&mut calls);
+        }
+        calls
+    }
+}
+
+impl PipelineStep {
+    pub fn collect_calls(&self, out: &mut Vec<String>) {
+        match self {
+            PipelineStep::Call(func) => out.push(func.clone()),
+            PipelineStep::Sequential(inner) | PipelineStep::Parallel(inner) => {
+                for step in inner {
+                    step.collect_calls(out);
+                }
+            }
+            PipelineStep::Branch {
+                on_true, on_false, ..
+            } => {
+                on_true.collect_calls(out);
+                on_false.collect_calls(out);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

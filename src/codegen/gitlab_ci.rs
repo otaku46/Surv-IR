@@ -47,7 +47,10 @@ impl GitLabCIGenerator {
 
             // Determine image/runner based on target
             if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
                     match target.kind.as_str() {
                         "production" => {
@@ -99,7 +102,10 @@ impl GitLabCIGenerator {
 
             // Add manual approval for production
             if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
                     if target.kind == "production" && deploy.gate.is_some() {
                         output.push_str("  when: manual\n");
@@ -109,7 +115,10 @@ impl GitLabCIGenerator {
 
             // Only run on main branch for production
             if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
                     if target.kind == "production" {
                         output.push_str("  only:\n");

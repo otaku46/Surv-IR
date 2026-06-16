@@ -1,0 +1,114 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.DiagnosticUIContext]
+kind = "node"
+role = "request"
+fields = {label = "string"}
+
+[schema.FileReadRequest]
+kind = "node"
+role = "request"
+fields = {path = "string", workspace_root = "string"}
+
+[schema.FileTreeNode]
+kind = "node"
+role = "data"
+fields = {children = "FileTreeNode[]?", kind = "file|dir", path = "string"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_FileTree]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "FileTreeNode?"}
+
+[schema.Outcome_ScopeUpdateResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ScopeUpdateResult?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.WorkspaceState]
+kind = "node"
+role = "data"
+fields = {file_tree = "FileTreeNode", open_tabs = "OpenTab[]", root = "string", search_query = "string?", selected_path = "string?"}
+
+[schema.WorkspaceTreeRequest]
+kind = "node"
+role = "request"
+fields = {max_depth = "int?", workspace_root = "string"}
+
+[func.backend_list_workspace_tree]
+intent = "Tauri command: list workspace files as a tree"
+input = ["schema.AppState", "schema.WorkspaceTreeRequest"]
+output = ["schema.Outcome_FileTree"]
+
+[func.backend_read_file]
+intent = "Tauri command: read file content"
+input = ["schema.AppState", "schema.FileReadRequest"]
+output = ["schema.Outcome_Document"]
+
+[func.ui_open_document_in_editor]
+intent = "Open/activate document in center editor (tabs + content)"
+input = ["schema.AppState", "schema.Outcome_Document"]
+output = ["schema.AppState"]
+
+[func.ui_open_file_from_tree]
+intent = "Open a file selected from the workspace tree"
+input = ["schema.AppState", "schema.FileReadRequest"]
+output = ["schema.FileReadRequest"]
+
+[func.ui_refresh_workspace_tree]
+intent = "Update workspace tree in UI from backend result"
+input = ["schema.AppState", "schema.Outcome_FileTree"]
+output = ["schema.AppState"]
+
+[func.ui_select_workspace_dir]
+intent = "Open system dialog to choose workspace directory"
+input = ["schema.AppState"]
+output = ["schema.WorkspaceTreeRequest"]
+
+[func.ui_select_workspace_file]
+intent = "Open system dialog to choose a file from workspace"
+input = ["schema.AppState"]
+output = ["schema.FileReadRequest"]
+
+[func.ui_show_diagnostics_with_context]
+intent = "Present diagnostics with a UI context label (e.g. after_workspace_open)"
+input = ["schema.AppState", "schema.DiagnosticUIContext", "schema.Outcome_AppState", "schema.Outcome_Document", "schema.Outcome_AgentRunResult", "schema.Outcome_ScopeUpdateResult", "schema.Outcome_TestResult"]
+output = ["schema.AppState"]
+
+[mod.ui_workspace_pane]
+purpose = "Left pane: workspace select + file tree + open file (OpenTab UI display removed - tabs visible in EditorPane)"
+schemas = ["schema.AppState", "schema.WorkspaceState", "schema.FileTreeNode", "schema.WorkspaceTreeRequest", "schema.Outcome_FileTree", "schema.FileReadRequest", "schema.Outcome_Document", "schema.DiagnosticUIContext", "schema.Diagnostic"]
+funcs = ["func.ui_select_workspace_dir", "func.ui_select_workspace_file", "func.backend_list_workspace_tree", "func.ui_refresh_workspace_tree", "func.ui_open_file_from_tree", "func.backend_read_file", "func.ui_open_document_in_editor", "func.ui_show_diagnostics_with_context"]
+pipeline = ["func.ui_select_workspace_dir", "func.backend_list_workspace_tree", "func.ui_refresh_workspace_tree"]
+

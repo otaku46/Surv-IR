@@ -46,7 +46,10 @@ impl GitHubActionsGenerator {
 
             // Determine runner based on target
             let runner = if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
                     match target.kind.as_str() {
                         "production" => "ubuntu-latest",
@@ -63,7 +66,10 @@ impl GitHubActionsGenerator {
 
             // Add environment for production/staging
             if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
                     output.push_str(&format!("    environment: {}\n", target.kind));
                 }
@@ -73,7 +79,9 @@ impl GitHubActionsGenerator {
             if !job.requires.is_empty() {
                 output.push_str("    needs:");
                 if job.requires.len() == 1 {
-                    let dep = job.requires[0].strip_prefix("job.").unwrap_or(&job.requires[0]);
+                    let dep = job.requires[0]
+                        .strip_prefix("job.")
+                        .unwrap_or(&job.requires[0]);
                     output.push_str(&format!(" {}\n", Self::sanitize_job_name(dep)));
                 } else {
                     output.push_str("\n");
@@ -91,7 +99,10 @@ impl GitHubActionsGenerator {
 
             // Add each command as a step
             for (i, cmd) in job.runs.iter().enumerate() {
-                output.push_str(&format!("      - name: {}\n", Self::generate_step_name(cmd, i)));
+                output.push_str(&format!(
+                    "      - name: {}\n",
+                    Self::generate_step_name(cmd, i)
+                ));
                 output.push_str("        run: |\n");
                 output.push_str(&format!("          {}\n", cmd));
 
@@ -112,7 +123,10 @@ impl GitHubActionsGenerator {
 
             // Add approval requirement for production jobs
             if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
                     if target.kind == "production" && deploy.gate.is_some() {
                         output.push_str("      # Production deployment requires manual approval via GitHub environment protection rules\n");

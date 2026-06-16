@@ -1,0 +1,124 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.Document]
+kind = "node"
+role = "data"
+fields = {content = "string", language = "string", path = "string", version = "int"}
+
+[schema.EditorState]
+kind = "node"
+role = "data"
+fields = {active_path = "string?", documents = "Document[]", selection = "TextSelection?", view_mode = "code|spec|ir|diff"}
+
+[schema.FileReadRequest]
+kind = "node"
+role = "request"
+fields = {path = "string", workspace_root = "string"}
+
+[schema.FileWriteRequest]
+kind = "node"
+role = "request"
+fields = {content = "string", path = "string", workspace_root = "string"}
+
+[schema.NavigateRequest]
+kind = "node"
+role = "request"
+fields = {column = "int?", line = "int", path = "string"}
+
+[schema.NavigationItem]
+kind = "node"
+role = "ui"
+fields = {kind = "schema|func|mod", line = "int", name = "string", preview = "string"}
+
+[schema.NavigationState]
+kind = "node"
+role = "ui"
+fields = {active_path = "string?", filter = "all|schema|func|mod", items = "NavigationItem[]", view = "definitions|references"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_ScopeUpdateResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ScopeUpdateResult?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.SurvIRFile]
+kind = "node"
+role = "ir"
+fields = {content = "string", path = "string"}
+
+[schema.TextSelection]
+kind = "node"
+role = "data"
+fields = {from = "int", to = "int"}
+
+[func.backend_read_file]
+intent = "Tauri command: read file content"
+input = ["schema.AppState", "schema.FileReadRequest"]
+output = ["schema.Outcome_Document"]
+
+[func.backend_write_file]
+intent = "Tauri command: write file content to disk"
+input = ["schema.AppState", "schema.FileWriteRequest"]
+output = ["schema.Outcome_AppState"]
+
+[func.ui_edit_buffer]
+intent = "Edit active document buffer (marks dirty, increments version)"
+input = ["schema.AppState"]
+output = ["schema.AppState"]
+
+[func.ui_index_ir_symbols]
+intent = "Index IR symbols (schema/func/mod) from active document"
+input = ["schema.AppState", "schema.Document"]
+output = ["schema.NavigationState"]
+
+[func.ui_navigate_to_symbol]
+intent = "Navigate editor to a schema/func/mod definition or reference"
+input = ["schema.AppState", "schema.NavigateRequest"]
+output = ["schema.AppState"]
+
+[func.ui_open_document_in_editor]
+intent = "Open/activate document in center editor (tabs + content)"
+input = ["schema.AppState", "schema.Outcome_Document"]
+output = ["schema.AppState"]
+
+[func.ui_show_diagnostics]
+intent = "Present diagnostics in UI (inline + panel) and block if errors"
+input = ["schema.AppState", "schema.Outcome_AppState", "schema.Outcome_Document", "schema.Outcome_AgentRunResult", "schema.Outcome_ScopeUpdateResult", "schema.Outcome_TestResult"]
+output = ["schema.AppState"]
+
+[mod.ui_editor_pane]
+purpose = "Center pane: Monaco editor + tabs + save + context menu navigation (Go to Definition, Find References)"
+schemas = ["schema.AppState", "schema.EditorState", "schema.Document", "schema.TextSelection", "schema.NavigateRequest", "schema.NavigationItem", "schema.FileReadRequest", "schema.FileWriteRequest", "schema.Outcome_Document", "schema.Outcome_AppState", "schema.SurvIRFile", "schema.Diagnostic"]
+funcs = ["func.backend_read_file", "func.ui_open_document_in_editor", "func.ui_edit_buffer", "func.backend_write_file", "func.ui_index_ir_symbols", "func.ui_navigate_to_symbol", "func.ui_show_diagnostics"]
+pipeline = ["func.backend_read_file", "func.ui_open_document_in_editor", "func.ui_edit_buffer", "func.backend_write_file", "func.ui_show_diagnostics"]
+

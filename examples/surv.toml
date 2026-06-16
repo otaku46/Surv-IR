@@ -1,5 +1,15 @@
 [project]
 name = "example-project"
+description = "Example projects demonstrating Surv IR capabilities"
 
 [paths]
 ir_root = "."
+
+[files]
+"blog_sample_user_service.toml" = {description = "User service with email notifications"}
+"todo_api.toml" = {description = "Simple Todo REST API"}
+"todo_with_status.toml" = {description = "Todo API with implementation status tracking"}
+"user_api.toml" = {description = "User CRUD API"}
+"auth.toml" = {description = "Authentication module"}
+"multi_module_status.toml" = {description = "Multi-module project with status"}
+"deploy.toml" = {description = "CI/CD deployment pipeline"}

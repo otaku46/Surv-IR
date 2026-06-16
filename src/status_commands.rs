@@ -1,8 +1,8 @@
-use survibe_parser_rs::ast::Section;
-use survibe_parser_rs::parser::parse_surv_file;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::Write as IoWrite;
+use survibe_parser_rs::ast::Section;
+use survibe_parser_rs::parser::parse_surv_file;
 
 pub fn run_status(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
@@ -127,9 +127,13 @@ fn run_status_init(filename: &str) -> Result<(), Box<dyn Error>> {
 
     // Generate status section
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let mut status_text = String::from("\n# ============================================================================\n");
+    let mut status_text = String::from(
+        "\n# ============================================================================\n",
+    );
     status_text.push_str("# IMPLEMENTATION STATUS\n");
-    status_text.push_str("# ============================================================================\n\n");
+    status_text.push_str(
+        "# ============================================================================\n\n",
+    );
     status_text.push_str("[status]\n");
     status_text.push_str(&format!("updated_at = \"{}\"\n", today));
 
@@ -428,13 +432,17 @@ fn run_status_sync(filename: &str) -> Result<(), Box<dyn Error>> {
     }
 
     // Get existing status section
-    let status_section = parsed.sections.iter().find_map(|section| {
-        if let Section::Status(s) = section {
-            Some(s)
-        } else {
-            None
-        }
-    }).unwrap();
+    let status_section = parsed
+        .sections
+        .iter()
+        .find_map(|section| {
+            if let Section::Status(s) = section {
+                Some(s)
+            } else {
+                None
+            }
+        })
+        .unwrap();
 
     // Collect all modules
     let all_modules: Vec<String> = parsed

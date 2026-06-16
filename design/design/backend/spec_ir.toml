@@ -1,0 +1,104 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.IRFixRequest]
+kind = "node"
+role = "request"
+fields = {attempt = "int", diagnostics = "Diagnostic[]", ir = "SurvIRFile", max_attempts = "int"}
+
+[schema.IRFixResult]
+kind = "node"
+role = "response"
+fields = {ir = "SurvIRFile", remaining = "Diagnostic[]", resolved = "bool"}
+
+[schema.IRGenerationRequest]
+kind = "node"
+role = "request"
+fields = {constraints = "string[]", ir_path = "string?", pipeline_mode = "linear", spec = "SpecDocument"}
+
+[schema.IRGenerationResult]
+kind = "node"
+role = "response"
+fields = {ir = "SurvIRFile", warnings = "string[]"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_IRFixResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "IRFixResult?"}
+
+[schema.Outcome_IRGenerationResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "IRGenerationResult?"}
+
+[schema.Outcome_SpecGenerationResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "SpecGenerationResult?"}
+
+[schema.SpecDocument]
+kind = "node"
+role = "spec"
+fields = {content = "string", path = "string?", source = "chat|file|manual", version = "int?"}
+
+[schema.SpecGenerationRequest]
+kind = "node"
+role = "request"
+fields = {messages = "ChatMessage[]?", notes = "string[]?", source = "chat_log|file|manual", spec_path = "string?", summary = "ChatSummary?"}
+
+[schema.SpecGenerationResult]
+kind = "node"
+role = "response"
+fields = {spec = "SpecDocument", warnings = "string[]"}
+
+[schema.SurvCheckRequest]
+kind = "node"
+role = "request"
+fields = {file_path = "string", workspace_root = "string"}
+
+[schema.SurvCheckResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", is_valid = "bool", summary = "string"}
+
+[func.backend_fix_ir_with_diagnostics]
+intent = "LLM: patch IR using diagnostics (checker-driven loop, max attempts)"
+input = ["schema.IRFixRequest"]
+output = ["schema.Outcome_IRFixResult"]
+
+[func.backend_generate_ir]
+intent = "LLM: compile SpecDocument to Surv IR (valid TOML, linear pipeline)"
+input = ["schema.IRGenerationRequest"]
+output = ["schema.Outcome_IRGenerationResult"]
+
+[func.backend_generate_spec]
+intent = "LLM: compile chat log/summary into SpecDocument (minimal, checker-oriented)"
+input = ["schema.SpecGenerationRequest"]
+output = ["schema.Outcome_SpecGenerationResult"]
+
+[func.backend_surv_check]
+intent = "Run Surv IR parse/check (surc) for gating"
+input = ["schema.AppState", "schema.Outcome_AppState"]
+output = ["schema.Outcome_AppState"]
+
+[mod.backend_spec_ir]
+purpose = "Rust(Tauri) backend: spec/ir compiler loop with checker-driven fixes"
+schemas = ["schema.SpecGenerationRequest", "schema.SpecGenerationResult", "schema.Outcome_SpecGenerationResult", "schema.SpecDocument", "schema.IRGenerationRequest", "schema.IRGenerationResult", "schema.Outcome_IRGenerationResult", "schema.IRFixRequest", "schema.IRFixResult", "schema.Outcome_IRFixResult", "schema.SurvCheckRequest", "schema.SurvCheckResult", "schema.Diagnostic"]
+funcs = ["func.backend_generate_spec", "func.backend_generate_ir", "func.backend_surv_check", "func.backend_fix_ir_with_diagnostics"]
+pipeline = ["func.backend_generate_spec", "func.backend_generate_ir", "func.backend_surv_check", "func.backend_fix_ir_with_diagnostics"]
+

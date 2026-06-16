@@ -42,7 +42,9 @@ pub fn parse_deploy_file<R: Read>(reader: R) -> Result<DeployFile, ParseError> {
         if let Some(target_table) = deploy_table.get("target").and_then(|v| v.as_table()) {
             for (name, value) in target_table {
                 if let Some(table) = value.as_table() {
-                    deploy.targets.insert(name.clone(), parse_target(name, table));
+                    deploy
+                        .targets
+                        .insert(name.clone(), parse_target(name, table));
                 }
             }
         }
@@ -77,7 +79,9 @@ pub fn parse_deploy_file<R: Read>(reader: R) -> Result<DeployFile, ParseError> {
         if let Some(secret_table) = deploy_table.get("secret").and_then(|v| v.as_table()) {
             for (name, value) in secret_table {
                 if let Some(table) = value.as_table() {
-                    deploy.secrets.insert(name.clone(), parse_secret(name, table));
+                    deploy
+                        .secrets
+                        .insert(name.clone(), parse_secret(name, table));
                 }
             }
         }
@@ -120,10 +124,7 @@ pub fn parse_deploy_file_from_path(path: &Path) -> Result<DeployFile, ParseError
 }
 
 fn get_nested_table<'a>(root: &'a TomlTable, key1: &str, key2: &str) -> Option<&'a TomlTable> {
-    root.get(key1)?
-        .as_table()?
-        .get(key2)?
-        .as_table()
+    root.get(key1)?.as_table()?.get(key2)?.as_table()
 }
 
 fn get_string(table: &TomlTable, key: &str) -> String {

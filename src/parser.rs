@@ -1,6 +1,6 @@
 use crate::ast::{
-    FuncSection, ImportDecl, MetaSection, ModSection, ModuleStatus, RequireDecl, SchemaSection,
-    Section, StatusSection, SurvFile,
+    FuncSection, ImportDecl, MetaSection, ModSection, ModuleStatus, PipelineStep, RequireDecl,
+    SchemaSection, Section, StatusSection, SurvFile,
 };
 use crate::simple_toml::{parse_toml, TomlTable, TomlValue};
 use std::collections::BTreeMap;
@@ -166,11 +166,7 @@ fn parse_sections(raw: &TomlTable) -> Result<Vec<Section>, ParseError> {
     }
 
     if let Some(mod_table) = get_table(raw, "mod") {
-        for (name, value) in mod_table {
-            if let TomlValue::Table(section) = value {
-                sections.push(Section::Mod(parse_mod_section(name, section)));
-            }
-        }
+        parse_mod_tree("", mod_table, &mut sections);
     }
 
     if let Some(status_table) = get_table(raw, "status") {
@@ -178,6 +174,28 @@ fn parse_sections(raw: &TomlTable) -> Result<Vec<Section>, ParseError> {
     }
 
     Ok(sections)
+}
+
+fn parse_mod_tree(parent_path: &str, table: &TomlTable, sections: &mut Vec<Section>) {
+    for (key, value) in table {
+        if key == "purpose"
+            || key == "schemas"
+            || key == "funcs"
+            || key == "pipeline"
+            || key == "submods"
+        {
+            continue;
+        }
+        if let TomlValue::Table(sub_table) = value {
+            let full_name = if parent_path.is_empty() {
+                key.clone()
+            } else {
+                format!("{}.{}", parent_path, key)
+            };
+            sections.push(Section::Mod(parse_mod_section(&full_name, sub_table)));
+            parse_mod_tree(&full_name, sub_table, sections);
+        }
+    }
 }
 
 fn get_table<'a>(table: &'a TomlTable, key: &str) -> Option<&'a TomlTable> {
@@ -239,6 +257,7 @@ fn parse_mod_section(name: &str, table: &TomlTable) -> ModSection {
         schemas: parse_string_set(table, "schemas"),
         funcs: parse_string_set(table, "funcs"),
         pipeline: parse_pipeline(table, "pipeline"),
+        submods: parse_string_set(table, "submods"),
     }
 }
 
@@ -270,26 +289,74 @@ fn parse_string_set(table: &TomlTable, key: &str) -> Vec<String> {
     }
 }
 
-fn parse_pipeline(table: &TomlTable, key: &str) -> Vec<String> {
-    match table.get(key) {
-        Some(TomlValue::Table(map)) => {
-            let mut result = Vec::new();
-            for chain in map.keys() {
-                result.extend(parse_pipeline_chain(chain));
-            }
-            result
-        }
-        Some(TomlValue::Array(items)) => {
+fn parse_pipeline(table: &TomlTable, key: &str) -> Vec<PipelineStep> {
+    if let Some(value) = table.get(key) {
+        parse_pipeline_item_array(value)
+    } else {
+        Vec::new()
+    }
+}
+
+fn parse_pipeline_item_array(value: &TomlValue) -> Vec<PipelineStep> {
+    match value {
+        TomlValue::Array(items) => {
             let mut result = Vec::new();
             for item in items {
-                if let Some(s) = item.as_str() {
-                    result.extend(parse_pipeline_chain(s));
-                }
+                result.extend(parse_pipeline_item(item));
             }
             result
         }
-        Some(TomlValue::String(s)) => parse_pipeline_chain(s),
+        _ => parse_pipeline_item(value),
+    }
+}
+
+fn parse_pipeline_item(value: &TomlValue) -> Vec<PipelineStep> {
+    match value {
+        TomlValue::String(s) => parse_pipeline_chain(s),
+        TomlValue::Table(map) => {
+            if let Some(parallel_val) = map.get("parallel") {
+                let steps = parse_pipeline_item_array(parallel_val);
+                vec![PipelineStep::Parallel(steps)]
+            } else if let Some(branch_val) = map.get("branch") {
+                if let Some(branch_table) = branch_val.as_table() {
+                    let condition = get_string(branch_table, "condition");
+                    let on_true = match branch_table.get("on_true") {
+                        Some(val) => parse_pipeline_item_single(val),
+                        None => PipelineStep::Call(String::new()),
+                    };
+                    let on_false = match branch_table.get("on_false") {
+                        Some(val) => parse_pipeline_item_single(val),
+                        None => PipelineStep::Call(String::new()),
+                    };
+                    vec![PipelineStep::Branch {
+                        condition,
+                        on_true: Box::new(on_true),
+                        on_false: Box::new(on_false),
+                    }]
+                } else {
+                    vec![]
+                }
+            } else {
+                let mut result = Vec::new();
+                for chain in map.keys() {
+                    result.extend(parse_pipeline_chain(chain));
+                }
+                result
+            }
+        }
+        TomlValue::Array(_) => parse_pipeline_item_array(value),
         _ => Vec::new(),
+    }
+}
+
+fn parse_pipeline_item_single(value: &TomlValue) -> PipelineStep {
+    let mut items = parse_pipeline_item(value);
+    if items.is_empty() {
+        PipelineStep::Call(String::new())
+    } else if items.len() == 1 {
+        items.pop().unwrap()
+    } else {
+        PipelineStep::Sequential(items)
     }
 }
 
@@ -311,7 +378,7 @@ fn parse_inline_brace_set(input: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_pipeline_chain(input: &str) -> Vec<String> {
+fn parse_pipeline_chain(input: &str) -> Vec<PipelineStep> {
     let mut s = input.trim();
     if let Some(stripped) = s.strip_prefix('{') {
         s = stripped;
@@ -326,6 +393,7 @@ fn parse_pipeline_chain(input: &str) -> Vec<String> {
     s.split("->")
         .map(|part| part.trim().to_string())
         .filter(|step| !step.is_empty())
+        .map(PipelineStep::Call)
         .collect()
 }
 
@@ -414,25 +482,34 @@ funcs   = ["func.create_user", "func.save_user", "func.get_user"]
         let cases = vec![
             (
                 "func.a -> func.b",
-                vec!["func.a".to_string(), "func.b".to_string()],
+                vec![
+                    PipelineStep::Call("func.a".to_string()),
+                    PipelineStep::Call("func.b".to_string()),
+                ],
             ),
             (
                 "func.a -> func.b -> func.c",
                 vec![
-                    "func.a".to_string(),
-                    "func.b".to_string(),
-                    "func.c".to_string(),
+                    PipelineStep::Call("func.a".to_string()),
+                    PipelineStep::Call("func.b".to_string()),
+                    PipelineStep::Call("func.c".to_string()),
                 ],
             ),
-            ("func.single", vec!["func.single".to_string()]),
+            (
+                "func.single",
+                vec![PipelineStep::Call("func.single".to_string())],
+            ),
             (
                 "{ func.a -> func.b }",
-                vec!["func.a".to_string(), "func.b".to_string()],
+                vec![
+                    PipelineStep::Call("func.a".to_string()),
+                    PipelineStep::Call("func.b".to_string()),
+                ],
             ),
         ];
 
         for (input, expected) in cases {
-            assert_eq!(parse_pipeline_chain(input), expected);
+            assert_eq!(super::parse_pipeline_chain(input), expected);
         }
     }
 }

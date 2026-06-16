@@ -1,0 +1,54 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.GraphPane]
+kind = "node"
+role = "ui"
+fields = {active_file_path = "string?", export_type = "pipeline|module-detail", mermaid_code = "string", module_name = "string", title = "Graph View"}
+
+[schema.Outcome_SurvExport]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "SurvExportResult?"}
+
+[schema.SurvExportRequest]
+kind = "node"
+role = "request"
+fields = {export_type = "pipeline|modules|module-detail", file_path = "string", module_name = "string?", workspace_root = "string"}
+
+[schema.SurvExportResult]
+kind = "node"
+role = "response"
+fields = {export_type = "string", mermaid_code = "string"}
+
+[func.backend_surv_export_graph]
+intent = "Export Surv IR graph as Mermaid diagram (surc export)"
+input = ["schema.SurvExportRequest"]
+output = ["schema.Outcome_SurvExport"]
+
+[func.ui_export_graph_request]
+intent = "Create graph export request from UI inputs"
+input = ["schema.AppState", "schema.GraphPane"]
+output = ["schema.SurvExportRequest"]
+
+[func.ui_render_graph_view]
+intent = "Render graph view pane with Mermaid visualization"
+input = ["schema.AppState", "schema.Outcome_SurvExport"]
+output = ["schema.AppState"]
+
+[mod.ui_graph_view]
+purpose = "Bottom panel tab: Surv IR graph visualization with Mermaid"
+schemas = ["schema.AppState", "schema.GraphPane", "schema.SurvExportRequest", "schema.SurvExportResult", "schema.Outcome_SurvExport", "schema.Diagnostic"]
+funcs = ["func.ui_render_graph_view", "func.ui_export_graph_request", "func.backend_surv_export_graph"]
+pipeline = ["func.ui_export_graph_request", "func.backend_surv_export_graph", "func.ui_render_graph_view"]
+

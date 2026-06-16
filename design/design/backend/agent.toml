@@ -1,0 +1,44 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AgentRunRequest]
+kind = "node"
+role = "request"
+fields = {constraints = "string[]", file_list = "string[]", inputs = "string", kind = "Design|Spec|IR|Plan|Impl|Review", scope = "string"}
+
+[schema.AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", explanation = "string", patch = "Patch?", suggested_tests = "string[]"}
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.RunReport]
+kind = "node"
+role = "report"
+fields = {finished_at = "timestamp", input_hash = "string", model = "string", patch_hash = "string", prompt_hash = "string", run_id = "string", started_at = "timestamp", summary = "string"}
+
+[func.backend_agent_run]
+intent = "Tauri command: call LLM/agent with scoped files and constraints"
+input = ["schema.AppState", "schema.AgentRunRequest"]
+output = ["schema.Outcome_AgentRunResult"]
+
+[mod.backend_agent]
+purpose = "Rust(Tauri) backend: LLM/agent call + provenance report"
+schemas = ["schema.AppState", "schema.AgentRunRequest", "schema.AgentRunResult", "schema.Outcome_AgentRunResult", "schema.RunReport", "schema.Diagnostic"]
+funcs = ["func.backend_agent_run"]
+pipeline = ["func.backend_agent_run"]
+

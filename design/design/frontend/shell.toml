@@ -1,0 +1,103 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.BottomPanelState]
+kind = "node"
+role = "ui"
+fields = {active_tab = "diagnostics|graph|tasks|logs|git", selected_task_id = "string?", visible = "bool"}
+
+[schema.ChatPane]
+kind = "node"
+role = "ui"
+fields = {history_visible = "bool", mode_selector = "bool", scope_selector = "bool", title = "Chat"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.DiagnosticUIContext]
+kind = "node"
+role = "request"
+fields = {label = "string"}
+
+[schema.EditorPane]
+kind = "node"
+role = "ui"
+fields = {diff_enabled = "bool", tabs_visible = "bool", tabs_wrap = "bool", title = "Editor"}
+
+[schema.Outcome_AgentRunResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AgentRunResult?"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_ScopeUpdateResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "ScopeUpdateResult?"}
+
+[schema.Outcome_TestResult]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "TestResult?"}
+
+[schema.PaneSizing]
+kind = "node"
+role = "ui"
+fields = {bottom_height = "int", left_width = "int", right_width = "int"}
+
+[schema.UILayoutState]
+kind = "node"
+role = "data"
+fields = {bottom = "BottomPanelState", center = "EditorPane", focus = "left|center|right|bottom", left = "WorkspacePane", right = "ChatPane", sizing = "PaneSizing"}
+
+[schema.WorkspacePane]
+kind = "node"
+role = "ui"
+fields = {search_visible = "bool", title = "Workspace", tree_visible = "bool"}
+
+[func.init_app]
+intent = "Initialize IDE state (empty workspace, editor, chat, layout)"
+output = ["schema.AppState"]
+
+[func.ui_open_bottom_panel]
+intent = "Open bottom panel and select a tab (diagnostics/tasks/logs)"
+input = ["schema.AppState"]
+output = ["schema.AppState"]
+
+[func.ui_render_3_panes]
+intent = "Render 3-pane layout: Workspace / Editor / Chat"
+input = ["schema.AppState"]
+output = ["schema.AppState"]
+
+[func.ui_resize_panes]
+intent = "Resize pane boundaries via drag handles"
+input = ["schema.AppState", "schema.PaneSizing"]
+output = ["schema.AppState"]
+
+[func.ui_show_diagnostics_with_context]
+intent = "Present diagnostics with a UI context label (e.g. after_workspace_open)"
+input = ["schema.AppState", "schema.DiagnosticUIContext", "schema.Outcome_AppState", "schema.Outcome_Document", "schema.Outcome_AgentRunResult", "schema.Outcome_ScopeUpdateResult", "schema.Outcome_TestResult"]
+output = ["schema.AppState"]
+
+[mod.ui_shell]
+purpose = "React/Vite 3-pane shell + global UI state"
+schemas = ["schema.AppState", "schema.UILayoutState", "schema.PaneSizing", "schema.WorkspacePane", "schema.EditorPane", "schema.ChatPane", "schema.BottomPanelState", "schema.DiagnosticUIContext", "schema.Diagnostic", "schema.Outcome_AppState", "schema.Outcome_TestResult"]
+funcs = ["func.init_app", "func.ui_render_3_panes", "func.ui_resize_panes", "func.ui_open_bottom_panel", "func.ui_show_diagnostics_with_context"]
+pipeline = ["func.init_app", "func.ui_render_3_panes"]
+

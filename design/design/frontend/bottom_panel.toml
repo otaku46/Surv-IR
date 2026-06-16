@@ -1,0 +1,59 @@
+package = "frontend"
+namespace = "plasm.ui"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.BottomPanelState]
+kind = "node"
+role = "ui"
+fields = {active_tab = "diagnostics|graph|tasks|logs|git", selected_task_id = "string?", visible = "bool"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.GitStatus]
+kind = "node"
+role = "data"
+fields = {branch = "string", changed = "string[]", untracked = "string[]"}
+
+[schema.LogEntry]
+kind = "node"
+role = "diagnostic"
+fields = {message = "string", stream = "stdout|stderr|system", ts = "timestamp"}
+
+[schema.Task]
+kind = "node"
+role = "data"
+fields = {finished_at = "timestamp?", kind = "agent|surv_check|tests|git", logs = "LogEntry[]", started_at = "timestamp?", status = "queued|running|succeeded|failed|canceled", task_id = "string", title = "string"}
+
+[schema.TaskQueueState]
+kind = "node"
+role = "data"
+fields = {active = "Task?", completed = "Task[]", queue = "Task[]"}
+
+[func.backend_task_append_log]
+intent = "Append a log entry to the active task (streaming output)"
+input = ["schema.AppState", "schema.LogEntry"]
+output = ["schema.AppState"]
+
+[func.ui_open_bottom_panel]
+intent = "Open bottom panel and select a tab (diagnostics/tasks/logs)"
+input = ["schema.AppState"]
+output = ["schema.AppState"]
+
+[func.ui_select_task]
+intent = "Select a task to show its logs"
+input = ["schema.AppState"]
+output = ["schema.AppState"]
+
+[mod.ui_bottom_panel]
+purpose = "Bottom panel: diagnostics/graph/tasks/logs/git (Navigate tab removed - navigation via editor context menu)"
+schemas = ["schema.AppState", "schema.BottomPanelState", "schema.TaskQueueState", "schema.Task", "schema.LogEntry", "schema.GitStatus", "schema.Diagnostic"]
+funcs = ["func.ui_open_bottom_panel", "func.ui_select_task", "func.backend_task_append_log"]
+pipeline = ["func.ui_open_bottom_panel", "func.ui_select_task"]
+

@@ -1,4 +1,4 @@
-use crate::ast::{FuncSection, ModSection, SchemaSection, Section, SurvFile};
+use crate::ast::{FuncSection, ModSection, PipelineStep, SchemaSection, Section, SurvFile};
 use crate::diagnostic::Diagnostic;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,6 +65,22 @@ fn mod_id(module: &ModSection) -> String {
     format!("mod.{}", module.name)
 }
 
+fn collect_pipeline_calls(steps: &[PipelineStep], out: &mut Vec<String>) {
+    for step in steps {
+        match step {
+            PipelineStep::Call(func) => out.push(func.clone()),
+            PipelineStep::Sequential(inner) => collect_pipeline_calls(inner, out),
+            PipelineStep::Parallel(inner) => collect_pipeline_calls(inner, out),
+            PipelineStep::Branch {
+                on_true, on_false, ..
+            } => {
+                collect_pipeline_calls(std::slice::from_ref(on_true.as_ref()), out);
+                collect_pipeline_calls(std::slice::from_ref(on_false.as_ref()), out);
+            }
+        }
+    }
+}
+
 fn check_func_schemas(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
     for func in index.funcs.values() {
         for schema in &func.input {
@@ -101,6 +117,18 @@ fn check_func_schemas(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
 
 fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
     for module in index.mods.values() {
+        for submod in &module.submods {
+            let expected_full_name = format!("{}.{}", mod_id(module), submod);
+            if !index.mods.contains_key(&expected_full_name) {
+                diags.push(Diagnostic {
+                    severity: "error".into(),
+                    kind: "UndefinedSubmod".into(),
+                    message: format!("mod {}: submod {} is not defined", mod_id(module), submod),
+                    location: format!("{}.submods({})", mod_id(module), submod),
+                });
+            }
+        }
+
         for schema in &module.schemas {
             if !index.schemas.contains_key(schema) {
                 diags.push(Diagnostic {
@@ -123,7 +151,9 @@ fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
             }
         }
 
-        for step in &module.pipeline {
+        let mut pipeline_calls = Vec::new();
+        collect_pipeline_calls(&module.pipeline, &mut pipeline_calls);
+        for step in &pipeline_calls {
             if !index.funcs.contains_key(step) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
@@ -196,8 +226,11 @@ fn check_pipeline_semantics(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) 
             continue;
         }
 
+        let mut pipeline_calls = Vec::new();
+        collect_pipeline_calls(&module.pipeline, &mut pipeline_calls);
+
         let mut seen = BTreeSet::new();
-        for step in &module.pipeline {
+        for step in &pipeline_calls {
             if !seen.insert(step.clone()) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
@@ -212,7 +245,7 @@ fn check_pipeline_semantics(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) 
             }
         }
 
-        for pair in module.pipeline.windows(2) {
+        for pair in pipeline_calls.windows(2) {
             let f1 = &pair[0];
             let f2 = &pair[1];
 
@@ -295,7 +328,9 @@ fn check_unused_definitions(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) 
         for func in &module.funcs {
             used_funcs.insert(func.clone());
         }
-        for step in &module.pipeline {
+        let mut pipeline_calls = Vec::new();
+        collect_pipeline_calls(&module.pipeline, &mut pipeline_calls);
+        for step in &pipeline_calls {
             used_funcs.insert(step.clone());
         }
     }
@@ -454,6 +489,22 @@ funcs   = ["func.create_user"]
         let file = parse(ir);
         let diags = check_surv_file(&file);
         assert!(diags.iter().any(|d| d.kind == "UndefinedSchemaInMod"));
+    }
+
+    #[test]
+    fn detects_undefined_submod() {
+        let ir = r#"
+[meta]
+name = "test"
+
+[mod.api]
+purpose = "test"
+submods = ["nonexistent"]
+"#;
+
+        let file = parse(ir);
+        let diags = check_surv_file(&file);
+        assert!(diags.iter().any(|d| d.kind == "UndefinedSubmod"));
     }
 
     #[test]

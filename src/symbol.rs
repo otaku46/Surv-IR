@@ -437,11 +437,11 @@ pub fn resolve_names_with_packages(
                             &mut diags,
                         );
                     }
-                    for step in &module.pipeline {
+                    for step in module.get_pipeline_calls() {
                         resolve_reference(
                             symbols,
                             SymbolKind::Func,
-                            step,
+                            &step,
                             path,
                             ctx,
                             &format!("mod.{}.pipeline({})", module.name, step),

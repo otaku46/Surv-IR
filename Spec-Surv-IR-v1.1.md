@@ -235,6 +235,7 @@ Modules compose schemas and functions into coherent units.
 ```toml
 [mod.ModuleName]
 purpose = "Description of this module's responsibility"
+submods = ["childModule"] # Optional: Declare child modules
 schemas = ["schema.A", "schema.B", ...]
 funcs = ["func.X", "func.Y", ...]
 pipeline = ["func.X", "func.Y", ...]  # Execution flow
@@ -244,10 +245,28 @@ boundary = {http = ["POST /users"], events = ["user.created"]}  # Optional
 #### Fields
 
 - **purpose**: Required. High-level description.
+- **submods**: Optional. Array of child module names (e.g., `["oauth"]` for `mod.auth.oauth`).
 - **schemas**: Schemas owned or used by this module.
 - **funcs**: Functions provided by this module.
 - **pipeline**: Ordered sequence of functions showing data flow.
 - **boundary**: Optional. External interfaces (HTTP endpoints, events, etc.)
+
+#### Nested Modules
+
+Modules can be nested hierarchically. A child module is defined by dot notation `[mod.parent.child]`.
+The parent module can explicitly declare its children using the `submods` array, which enables validation to ensure the child module exists.
+
+```toml
+[mod.user]
+purpose = "User domain"
+submods = ["api", "auth"]
+
+[mod.user.api]
+purpose = "User HTTP API"
+
+[mod.user.auth]
+purpose = "User Authentication"
+```
 
 #### Pipeline Syntax
 
@@ -259,6 +278,19 @@ pipeline = ["func.validate", "func.transform", "func.save"]
 
 # Alternative: inline with arrows (parsed as sequence)
 pipeline = ["func.validate → func.transform → func.save"]
+
+# Parallel execution
+pipeline = [
+    "func.fetchUser",
+    { parallel = ["func.fetchOrders", "func.fetchPreferences"] },
+    "func.aggregateData"
+]
+
+# Branching logic
+pipeline = [
+    "func.checkCache",
+    { branch = { condition = "cache_miss", on_true = "func.fetchFromDB", on_false = "func.returnCached" } }
+]
 ```
 
 #### Example

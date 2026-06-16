@@ -23,7 +23,10 @@ fn check_undefined_references(deploy: &DeployFile, diags: &mut Vec<Diagnostic>) 
     for (job_name, job) in &deploy.jobs {
         // Check job.requires references
         for req in &job.requires {
-            if !req.is_empty() && !deploy.jobs.contains_key(req.strip_prefix("job.").unwrap_or(req))
+            if !req.is_empty()
+                && !deploy
+                    .jobs
+                    .contains_key(req.strip_prefix("job.").unwrap_or(req))
             {
                 diags.push(Diagnostic {
                     severity: "error".into(),
@@ -71,7 +74,10 @@ fn check_undefined_references(deploy: &DeployFile, diags: &mut Vec<Diagnostic>) 
 
         // Check permission references
         if !job.uses_perm.is_empty() {
-            let perm_name = job.uses_perm.strip_prefix("perm.").unwrap_or(&job.uses_perm);
+            let perm_name = job
+                .uses_perm
+                .strip_prefix("perm.")
+                .unwrap_or(&job.uses_perm);
             if !deploy.perms.contains_key(perm_name) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
@@ -108,7 +114,8 @@ fn check_dag_structure(deploy: &DeployFile, diags: &mut Vec<Diagnostic>) {
     let graph = build_job_graph(deploy);
 
     // Detect cycles using DFS with color marking
-    let mut color: HashMap<String, Color> = graph.keys().map(|k| (k.clone(), Color::White)).collect();
+    let mut color: HashMap<String, Color> =
+        graph.keys().map(|k| (k.clone(), Color::White)).collect();
     let mut path = Vec::new();
 
     for node in graph.keys() {
@@ -118,7 +125,10 @@ fn check_dag_structure(deploy: &DeployFile, diags: &mut Vec<Diagnostic>) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
                     kind: "DeployCycle".into(),
-                    message: format!("Deploy DAG contains a cycle: {} -> {}", cycle_path, cycle[0]),
+                    message: format!(
+                        "Deploy DAG contains a cycle: {} -> {}",
+                        cycle_path, cycle[0]
+                    ),
                     location: "deploy.job".into(),
                 });
             }
@@ -135,10 +145,7 @@ fn build_job_graph(deploy: &DeployFile) -> HashMap<String, Vec<String>> {
         for req in &job.requires {
             let req_name = req.strip_prefix("job.").unwrap_or(req);
             graph.entry(req_name.to_string()).or_default();
-            graph
-                .get_mut(job_name)
-                .unwrap()
-                .push(req_name.to_string());
+            graph.get_mut(job_name).unwrap().push(req_name.to_string());
         }
     }
 
@@ -252,7 +259,12 @@ fn check_secret_scope(deploy: &DeployFile, diags: &mut Vec<Diagnostic>) {
             continue;
         }
 
-        let target_ref = format!("target.{}", job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target));
+        let target_ref = format!(
+            "target.{}",
+            job.uses_target
+                .strip_prefix("target.")
+                .unwrap_or(&job.uses_target)
+        );
 
         for secret_ref in &job.needs_secrets {
             let secret_name = secret_ref.strip_prefix("secret.").unwrap_or(secret_ref);
@@ -374,7 +386,9 @@ fn check_side_effects_safety(deploy: &DeployFile, diags: &mut Vec<Diagnostic>) {
 
             let target_ref = format!(
                 "target.{}",
-                job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target)
+                job.uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target)
             );
 
             if !gate.require_manual_approval_for.contains(&target_ref) {
@@ -425,9 +439,7 @@ runs = ["kubectl apply"]
         let deploy = parse_deploy_file(Cursor::new(deploy_ir)).unwrap();
         let diags = check_deploy_file(&deploy);
 
-        assert!(diags
-            .iter()
-            .any(|d| d.kind == "UndefinedJobReference"));
+        assert!(diags.iter().any(|d| d.kind == "UndefinedJobReference"));
     }
 
     #[test]
@@ -466,7 +478,9 @@ runs = ["orphaned"]
         let diags = check_deploy_file(&deploy);
 
         // Should have both undefined reference and unreachable warnings
-        assert!(diags.iter().any(|d| d.kind == "UnreachableJob" || d.kind == "UndefinedJobReference"));
+        assert!(diags
+            .iter()
+            .any(|d| d.kind == "UnreachableJob" || d.kind == "UndefinedJobReference"));
     }
 
     #[test]
@@ -490,9 +504,7 @@ needs_secrets = ["secret.DB_URL"]
         let deploy = parse_deploy_file(Cursor::new(deploy_ir)).unwrap();
         let diags = check_deploy_file(&deploy);
 
-        assert!(diags
-            .iter()
-            .any(|d| d.kind == "SecretScopeViolation"));
+        assert!(diags.iter().any(|d| d.kind == "SecretScopeViolation"));
     }
 
     #[test]
@@ -535,9 +547,7 @@ side_effects = ["db_migration"]
         let deploy = parse_deploy_file(Cursor::new(deploy_ir)).unwrap();
         let diags = check_deploy_file(&deploy);
 
-        assert!(diags
-            .iter()
-            .any(|d| d.kind == "DbMigrationWithoutApproval"));
+        assert!(diags.iter().any(|d| d.kind == "DbMigrationWithoutApproval"));
     }
 
     #[test]

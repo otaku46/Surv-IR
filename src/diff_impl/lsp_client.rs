@@ -1,5 +1,6 @@
 use super::types::{FoundSymbol, SymbolRange};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -29,7 +30,10 @@ impl LspClient {
                 if which::which("rust-analyzer").is_ok() {
                     ("rust-analyzer", vec![])
                 } else {
-                    return Err("rust-analyzer not found. Install with: rustup component add rust-analyzer".into());
+                    return Err(
+                        "rust-analyzer not found. Install with: rustup component add rust-analyzer"
+                            .into(),
+                    );
                 }
             }
             _ => return Err(format!("Unsupported language: {}", language).into()),
@@ -123,15 +127,27 @@ impl LspClient {
             end_char: end.get("character")?.as_u64()? as u32,
         };
 
-        let container_name = value.get("containerName").and_then(|v| v.as_str()).map(String::from);
+        let container_name = value
+            .get("containerName")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         Some(FoundSymbol {
+            language: None,
             name,
             kind: kind_str,
             uri,
+            relative_path: None,
+            module_path: None,
+            impl_path: None,
             range: symbol_range,
             container_name,
+            visibility: None,
+            is_test: false,
+            is_method: false,
             detail: None,
+            signature: None,
+            fields: BTreeMap::new(),
         })
     }
 

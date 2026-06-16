@@ -104,7 +104,10 @@ impl HtmlExporter {
         // Build job nodes
         for (job_name, job) in &deploy.jobs {
             let target_kind = if !job.uses_target.is_empty() {
-                let target_name = job.uses_target.strip_prefix("target.").unwrap_or(&job.uses_target);
+                let target_name = job
+                    .uses_target
+                    .strip_prefix("target.")
+                    .unwrap_or(&job.uses_target);
                 deploy.targets.get(target_name).map(|t| t.kind.clone())
             } else {
                 None
@@ -197,7 +200,11 @@ impl HtmlExporter {
                                 role: Some(schema.role.clone()),
                                 intent: None,
                                 purpose: None,
-                                fields: schema.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                                fields: schema
+                                    .fields
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect(),
                                 input: Vec::new(),
                                 output: Vec::new(),
                             },

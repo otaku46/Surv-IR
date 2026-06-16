@@ -1,0 +1,64 @@
+package = "backend"
+namespace = "plasm.backend"
+
+[schema.AppState]
+kind = "node"
+role = "context"
+fields = {bottom_panel = "BottomPanelState", chat = "ChatState", diagnostics = "Diagnostic[]", editor = "EditorState", last_run = "RunReport?", tasks = "TaskQueueState", ui = "UILayoutState", workspace = "WorkspaceState"}
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = {code = "string", file = "string?", location = "string?", message = "string", severity = "error|warning|info"}
+
+[schema.FileReadRequest]
+kind = "node"
+role = "request"
+fields = {path = "string", workspace_root = "string"}
+
+[schema.FileWriteRequest]
+kind = "node"
+role = "request"
+fields = {content = "string", path = "string", workspace_root = "string"}
+
+[schema.Outcome_AppState]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "AppState?"}
+
+[schema.Outcome_Document]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "Document?"}
+
+[schema.Outcome_FileTree]
+kind = "node"
+role = "response"
+fields = {diagnostics = "Diagnostic[]", ok = "bool", value = "FileTreeNode?"}
+
+[schema.WorkspaceTreeRequest]
+kind = "node"
+role = "request"
+fields = {max_depth = "int?", workspace_root = "string"}
+
+[func.backend_list_workspace_tree]
+intent = "Tauri command: list workspace files as a tree"
+input = ["schema.AppState", "schema.WorkspaceTreeRequest"]
+output = ["schema.Outcome_FileTree"]
+
+[func.backend_read_file]
+intent = "Tauri command: read file content"
+input = ["schema.AppState", "schema.FileReadRequest"]
+output = ["schema.Outcome_Document"]
+
+[func.backend_write_file]
+intent = "Tauri command: write file content to disk"
+input = ["schema.AppState", "schema.FileWriteRequest"]
+output = ["schema.Outcome_AppState"]
+
+[mod.backend_workspace]
+purpose = "Rust(Tauri) backend: workspace I/O + tree listing (resolve_workspace_path handles '.' correctly)"
+schemas = ["schema.AppState", "schema.WorkspaceTreeRequest", "schema.FileReadRequest", "schema.FileWriteRequest", "schema.Outcome_FileTree", "schema.Outcome_Document", "schema.Outcome_AppState", "schema.Diagnostic"]
+funcs = ["func.backend_list_workspace_tree", "func.backend_read_file", "func.backend_write_file"]
+pipeline = ["func.backend_list_workspace_tree"]
+
