@@ -1,6 +1,6 @@
 # Surv IR Specification v1.1
 
-**Surv IR** (Intermediate Representation) is a declarative language for describing system architectures, focusing on data schemas, functions, and module compositions.
+**Surv IR** (Intermediate Representation) is a declarative, TOML-based language for describing system architectures through data schemas, functions, module compositions, and implementation bindings.
 
 ---
 
@@ -13,95 +13,115 @@
    - [Schema](#schema)
    - [Func](#func)
    - [Mod](#mod)
-5. [Advanced Features](#advanced-features)
+5. [Metadata, Dependencies & Status](#metadata-dependencies--status)
    - [Meta Section](#meta-section)
    - [Import & Require](#import--require)
    - [Status Section](#status-section)
-   - [Implementation Metadata](#implementation-metadata)
+   - [Implementation Metadata & Mapping](#implementation-metadata--mapping)
 6. [Project Organization](#project-organization)
-   - [Packages](#packages)
+   - [Packages & Manifests (`surv.toml`)](#packages--manifests-survtoml)
    - [Namespaces](#namespaces)
-   - [Manifests](#manifests)
 7. [Reference Resolution](#reference-resolution)
-8. [Examples](#examples)
+8. [Validation Rules](#validation-rules)
+9. [Tooling (`surc` CLI)](#tooling-surc-cli)
+10. [Examples](#examples)
 
 ---
 
 ## Overview
 
-Surv IR provides a standardized way to describe:
-- **Data structures** (schemas)
-- **Transformations** (functions)
-- **Compositions** (modules)
-- **Implementation metadata** (bindings, language constraints)
+Surv IR provides a single source of architectural truth across three core layers:
+- **Schemas (`[schema.*]`)** — Data structures, relationships, and boundaries
+- **Functions (`[func.*]`)** — Transformations and operations over schemas
+- **Modules (`[mod.*]`)** — Cohesive subsystems, pipelines, and external boundaries
+
+Alongside Structural Surv IR (this specification), the Surv ecosystem includes:
+- **[Behavior IR](behavior.md)** — Dynamic state machines, transitions, invariants, and temporal properties over Surv IR symbols
+- **Deploy IR** — Declarative CI/CD and deployment pipelines (`[deploy.*]`)
 
 **Design Principles:**
 - Declarative over imperative
 - Language-agnostic architecture description
-- Separation of design from implementation
-- Tooling-friendly (parseable, validatable, visualizable)
+- Explicit separation (and automated drift detection) between design and implementation
+- Deterministic, scriptable tooling for both humans and AI agents
 
 ---
 
 ## File Structure
 
-A Surv IR file is a TOML document with sections:
+A Surv IR file is a valid TOML document containing optional top-level headers followed by sections:
 
 ```toml
-# Optional headers
-package = "my_package"
-namespace = "api"
+# Optional file-level headers (must appear before any [section])
+package = "backend"
+namespace = "app.user"
+import = ["common"]
+require = ["mod.shared_auth"]
 
 # Optional metadata
 [meta]
-name = "my_design"
+name = "user_service"
 version = "0.1.0"
+description = "User management service design"
 
 # Schema definitions
 [schema.User]
 kind = "node"
 role = "entity"
-fields = {id = "uuid", name = "string"}
+fields = { id = "uuid", name = "string", email = "string" }
 
 # Function definitions
 [func.createUser]
 intent = "Create a new user"
-input = ["schema.UserRequest"]
+input = ["schema.CreateUserRequest"]
 output = ["schema.User"]
 
 # Module definitions
 [mod.user_api]
-purpose = "User management API"
-schemas = ["schema.User"]
+purpose = "User management HTTP API"
+schemas = ["schema.User", "schema.CreateUserRequest"]
 funcs = ["func.createUser"]
 pipeline = ["func.createUser"]
+boundary = { http = ["POST /users"] }
 ```
 
 ---
 
 ## Headers
 
-Headers appear at the top of a file (before any `[section]`):
+Headers must appear at the top of a file before any `[section]` header.
 
 ### `package`
-Optional. Declares which package this file belongs to.
+Optional. Declares which package (defined in `surv.toml`) this file belongs to.
 
 ```toml
 package = "backend"
 ```
 
 ### `namespace`
-Optional. **Prefixes all local identifiers** in this file.
+Optional. Prefixes all local identifiers defined in the file when resolved across a project.
 
 ```toml
-namespace = "user"
+namespace = "app.user"
 ```
 
-**Effect:** All schemas/funcs in this file are prefixed with the namespace:
-- `schema.Profile` → resolved as `user.schema.Profile`
-- `func.authenticate` → resolved as `user.func.authenticate`
+- `schema.Profile` → resolved globally as `app.user.schema.Profile`
+- `func.authenticate` → resolved globally as `app.user.func.authenticate`
+- `mod.user_api` → resolved globally as `app.user.mod.user_api`
 
-**Important:** Namespace is a **prefix**, not a scope separator.
+### `import`
+Optional array of strings. Imports packages (and optionally aliases them) for cross-package symbol resolution.
+
+```toml
+import = ["common", "auth as security"]
+```
+
+### `require` (or `requires`)
+Optional array of strings. Declares module-level dependencies required by modules in this file. Every entry **must** start with `mod.`.
+
+```toml
+require = ["mod.user_auth", "mod.database"]
+```
 
 ---
 
@@ -109,56 +129,50 @@ namespace = "user"
 
 ### Schema
 
-Schemas describe data structures.
+Schemas describe data structures, graph relationships, and state boundaries.
 
 #### Syntax
 
 ```toml
 [schema.SchemaName]
-kind = "node" | "edge" | "value"
-role = "entity" | "event" | "request" | "response" | "context" | ...
-type = "..."           # Optional: for aliases/generics
-from = "schema.X"      # Optional: for edges
-to = "schema.Y"        # Optional: for edges
-base = "schema.Z"      # Optional: inheritance
-label = "description"  # Optional
-fields = {field1 = "type1", field2 = "type2", ...}
-over = ["schema.A", "schema.B"]  # Optional: union types
+kind = "node" | "edge" | "boundary" | "value"
+role = "entity" | "event" | "request" | "response" | "context" | "error" | ...
+type = "UnderlyingType"                # Optional: type alias or target name
+from = "schema.Source"                 # Required when kind = "edge"
+to = "schema.Target"                   # Required when kind = "edge"
+base = "schema.Parent"                 # Optional: base schema reference
+over = ["schema.A", "schema.B"]        # Required when kind = "boundary" (or union)
+label = "Human-readable description"   # Optional
+fields = { field1 = "type1", field2 = "type2" }
 
 # Implementation metadata (optional)
 impl.bind = "ActualTypeName"
-impl.lang = "ts" | "rust" | "either"
-impl.path = "module.path"
+impl.lang = "rust" | "ts" | "c" | "zig" | "either"
+impl.path = "module::path"
 ```
-
-#### Field Types
-
-Types use a simple syntax:
-- Primitives: `string`, `int`, `float`, `bool`, `uuid`, `timestamp`
-- References: `schema.OtherSchema`
-- Arrays: `string[]`, `schema.User[]`
-- Optional: `string?`, `schema.User?`
-- Union: Use `over` field for schema unions
 
 #### Schema Kinds
 
-- **node**: Standalone entity or object
-- **edge**: Relationship between two schemas (requires `from` and `to`)
-- **value**: Value type or primitive wrapper
+| Kind | Description | Required Fields |
+| :--- | :--- | :--- |
+| `node` | Standalone entity, DTO, event, or value object | `fields` (optional) |
+| `edge` | Directed relationship between two schemas | `from`, `to` |
+| `boundary` | Collection/snapshot view or union over existing schemas | `over` (`["schema.X", ...]`) |
+| `value` | Primitive wrapper or scalar value type | `type` or `fields` |
+
+#### Field Types
+
+Field types inside `fields = { ... }` use a concise type notation:
+- **Primitives**: `string`, `int`, `float`, `bool`, `uuid`, `timestamp`, `bytes`, `any`
+- **Schema references**: `schema.OtherSchema` or `OtherSchema`
+- **Arrays / Lists**: `string[]`, `schema.User[]`, or `[User]`
+- **Optional / Nullable**: `string?`, `schema.User?`
+- **Inline unions / enums**: `"todo|partial|done"`
 
 #### Schema Roles
 
-Roles are semantic hints:
-- `entity`: Domain object
-- `event`: Event/message
-- `request`: API request
-- `response`: API response
-- `context`: Application state
-- `diagnostic`: Error/warning
-- `report`: Analytics/reporting
-- `config`: Configuration
-
-**Roles are advisory**—they guide understanding but don't enforce constraints.
+`role` is an advisory semantic tag used by visualization and analysis tools:
+- `entity`, `event`, `request`, `response`, `query`, `context`, `error`, `diagnostic`, `config`, `report`
 
 #### Example
 
@@ -166,302 +180,241 @@ Roles are semantic hints:
 [schema.User]
 kind = "node"
 role = "entity"
-fields = {id = "uuid", name = "string", email = "string", created_at = "timestamp"}
-
-[schema.UserCreatedEvent]
-kind = "node"
-role = "event"
-fields = {user_id = "uuid", timestamp = "timestamp"}
+fields = { id = "uuid", name = "string", email = "string", created_at = "timestamp" }
 
 [schema.Follows]
 kind = "edge"
 role = "relationship"
 from = "schema.User"
 to = "schema.User"
-fields = {since = "timestamp"}
+fields = { since = "timestamp" }
+
+[schema.UsersSnapshot]
+kind = "boundary"
+role = "context"
+over = ["schema.User"]
+label = "Active users in storage"
 ```
 
 ---
 
 ### Func
 
-Functions describe transformations or operations.
+Functions describe stateless transformations or stateful operations over schemas.
 
 #### Syntax
 
 ```toml
 [func.FunctionName]
 intent = "Human-readable description of what this function does"
-input = ["schema.Input1", "schema.Input2", ...]
-output = ["schema.Output1", "schema.Output2", ...]
-design_notes = "Optional implementation notes"
+input = ["schema.Input1", "schema.Input2"]
+output = ["schema.Output1", "schema.Output2"]
+design_notes = "Optional implementation notes or edge cases"
 
 # Implementation metadata (optional)
 impl.bind = "actual_function_name"
-impl.lang = "ts" | "rust" | "either"
-impl.path = "module.path"
+impl.lang = "rust" | "ts" | "c" | "zig" | "either"
+impl.path = "module::path"
 ```
 
 #### Fields
 
-- **intent**: Required. Describes the purpose.
-- **input**: Array of schema references consumed by this function.
-- **output**: Array of schema references produced by this function.
-- **design_notes**: Optional. Additional design context.
-
-#### Example
-
-```toml
-[func.createUser]
-intent = "Create a new user account"
-input = ["schema.CreateUserRequest"]
-output = ["schema.User", "schema.UserCreatedEvent"]
-design_notes = "Validates email uniqueness before creation"
-
-[func.getUserById]
-intent = "Retrieve user by ID"
-input = ["schema.UserId"]
-output = ["schema.User"]
-```
+- **`intent`**: Describes the responsibility of the function.
+- **`input`**: Array of `schema.*` references consumed by the function.
+- **`output`**: Array of `schema.*` references produced by the function.
+- **`design_notes`**: Optional architectural or implementation notes.
 
 ---
 
 ### Mod
 
-Modules compose schemas and functions into coherent units.
+Modules group schemas, functions, and execution pipelines into cohesive architectural units.
 
 #### Syntax
 
 ```toml
 [mod.ModuleName]
 purpose = "Description of this module's responsibility"
-submods = ["childModule"] # Optional: Declare child modules
-schemas = ["schema.A", "schema.B", ...]
-funcs = ["func.X", "func.Y", ...]
-pipeline = ["func.X", "func.Y", ...]  # Execution flow
-boundary = {http = ["POST /users"], events = ["user.created"]}  # Optional
+submods = ["childModule"]
+schemas = ["schema.A", "schema.B"]
+funcs = ["func.X", "func.Y"]
+pipeline = ["func.X -> func.Y"]
+boundary = { http = ["POST /users"], events = ["user.created"] }
 ```
 
 #### Fields
 
-- **purpose**: Required. High-level description.
-- **submods**: Optional. Array of child module names (e.g., `["oauth"]` for `mod.auth.oauth`).
-- **schemas**: Schemas owned or used by this module.
-- **funcs**: Functions provided by this module.
-- **pipeline**: Ordered sequence of functions showing data flow.
-- **boundary**: Optional. External interfaces (HTTP endpoints, events, etc.)
+- **`purpose`**: High-level description of the module's responsibility.
+- **`submods`**: Optional array of child module names (`["api"]` refers to `[mod.ModuleName.api]`).
+- **`schemas`**: Array of `schema.*` references used by this module.
+- **`funcs`**: Array of `func.*` references belonging to this module.
+- **`pipeline`**: Execution and data-flow steps within the module.
+- **`boundary`**: Optional external interface metadata (HTTP routes, events, CLI entrypoints, etc.).
 
 #### Nested Modules
 
-Modules can be nested hierarchically. A child module is defined by dot notation `[mod.parent.child]`.
-The parent module can explicitly declare its children using the `submods` array, which enables validation to ensure the child module exists.
+Modules can be nested hierarchically using dot notation `[mod.parent.child]`. Declaring `submods = ["child"]` in `[mod.parent]` enables static verification that `[mod.parent.child]` is defined.
 
 ```toml
 [mod.user]
-purpose = "User domain"
+purpose = "User domain root"
 submods = ["api", "auth"]
 
 [mod.user.api]
-purpose = "User HTTP API"
+purpose = "User HTTP endpoints"
 
 [mod.user.auth]
-purpose = "User Authentication"
+purpose = "User authentication handlers"
 ```
 
 #### Pipeline Syntax
 
-Pipeline describes execution flow:
+`pipeline` supports sequential lists, ASCII arrow chains (`->`), parallel blocks, and conditional branches:
 
 ```toml
-# Simple sequence
+# 1. Sequential array
 pipeline = ["func.validate", "func.transform", "func.save"]
 
-# Alternative: inline with arrows (parsed as sequence)
-pipeline = ["func.validate → func.transform → func.save"]
+# 2. Arrow chain (parsed as a sequential chain)
+pipeline = ["func.validate -> func.transform -> func.save"]
 
-# Parallel execution
+# 3. Parallel execution
 pipeline = [
     "func.fetchUser",
     { parallel = ["func.fetchOrders", "func.fetchPreferences"] },
     "func.aggregateData"
 ]
 
-# Branching logic
+# 4. Conditional branching
 pipeline = [
     "func.checkCache",
     { branch = { condition = "cache_miss", on_true = "func.fetchFromDB", on_false = "func.returnCached" } }
 ]
 ```
 
-#### Example
+> **Note:** Always use ASCII `->` for pipeline chains.
+
+---
+
+## Metadata, Dependencies & Status
+
+### Meta Section
+
+Provides file-level descriptive metadata:
 
 ```toml
-[mod.user_registration]
-purpose = "Handle user registration workflow"
-schemas = ["schema.RegistrationRequest", "schema.User", "schema.WelcomeEmail"]
-funcs = ["func.validateEmail", "func.createUser", "func.sendWelcomeEmail"]
-pipeline = ["func.validateEmail", "func.createUser", "func.sendWelcomeEmail"]
-boundary = {http = ["POST /register"]}
+[meta]
+name = "user_service_design"
+version = "0.2.0"
+description = "REST API and domain logic for user management"
 ```
 
 ---
 
-## Advanced Features
-
-### Meta Section
-
-Provides file-level metadata.
-
-```toml
-[meta]
-name = "my_api_design"
-version = "0.2.1"
-description = "REST API for user management"
-```
-
 ### Import & Require
 
-#### Import (Name Resolution Aid)
+#### `import` (Package Scope & Aliasing)
 
-Declares external symbols for easier referencing. **Syntactic convenience only.**
+Declares external packages (from `surv.toml`) whose symbols can be referenced in the current file:
 
 ```toml
-import = ["other_namespace.schema.User as ExtUser"]
+import = ["common", "billing as pay"]
 ```
 
-**Effect:**
-- Allows using `ExtUser` instead of `other_namespace.schema.User`
-- Checker validates that imported symbols exist (warns if not found)
-- Does NOT affect resolution—just an alias
+- Allows referencing symbols in package `common` by package name (`common.schema.Error`) or namespace (`app.common.schema.Error`), or via alias (`pay.schema.Invoice`).
+- Checked against `surv.toml` package declarations and `depends` constraints.
 
-#### Require (Semantic Dependency)
+#### `require` (Module Dependency)
 
-Declares that this file depends on external modules. **Semantic dependency.**
+Declares that modules in this file depend on other modules:
 
 ```toml
 require = ["mod.auth", "mod.storage"]
 ```
 
-**Important Rules:**
-1. **Format:** Each element must be `"mod.<name>"` (single module reference)
-2. **No chaining:** Don't use `"mod.a → mod.b"` syntax in require
-3. **Resolution:** Validated by ProjectChecker across the entire project
-4. **Errors:**
-   - Unresolved require → error
-   - Circular dependencies → error
-5. **Expansion:** If all modules in a file share the same requires, ProjectChecker creates dependency edges for each module
-
-**Example:**
-
-```toml
-require = ["mod.user_auth", "mod.database"]
-
-[mod.user_api]
-# Implicitly depends on mod.user_auth and mod.database
-
-[mod.admin_api]
-# Also implicitly depends on mod.user_auth and mod.database
-```
+- Each entry must start with `"mod."` (or `"<package_or_namespace>.mod.<name>"`).
+- Validated across the project for existence and circular dependency freedom.
 
 ---
 
 ### Status Section
 
-Track implementation status per module (added in v1.1).
+Tracks implementation progress directly inside Surv IR files:
 
 ```toml
 [status]
-updated_at = "2026-01-14"
+updated_at = "2026-11-18"
 
 [status.mod.user_api]
 state = "done" | "partial" | "skeleton" | "todo" | "blocked"
-coverage = 0.0..1.0
-notes = "Implementation notes"
+coverage = 0.75
+notes = "Create and get endpoints implemented"
 ```
 
-#### States
+#### Status States
 
-- `todo`: Not started (☐)
-- `skeleton`: Types/boundaries defined, no logic (◯)
-- `partial`: Partially implemented (◐)
-- `done`: Fully implemented (✓)
-- `blocked`: Blocked, needs redesign (✗)
-
-#### CLI Commands
-
-```bash
-surc status init <file.toml>         # Initialize status section
-surc status sync <file.toml>         # Add missing modules as 'todo'
-surc status set <mod> <file> --state partial --coverage 0.6
-surc status list <file.toml>
-surc status show <mod> <file.toml>
-```
+| State | Icon | Meaning |
+| :--- | :---: | :--- |
+| `todo` | ☐ | Not started |
+| `skeleton` | ◯ | Types and boundaries defined, logic unimplemented |
+| `partial` | ◐ | Partially implemented |
+| `done` | ✓ | Fully implemented |
+| `blocked` | ✗ | Blocked or awaiting redesign |
 
 ---
 
-### Implementation Metadata
+### Implementation Metadata & Mapping
 
-Surv IR can include hints for code generation and drift detection (added in v1.1).
+Surv IR symbols (`[schema.*]` and `[func.*]`) can carry implementation bindings for static/LSP drift detection (`surc diff`) and stub generation (`surc skeleton`).
 
-#### `impl.bind`
+#### Inline `impl.*` Attributes
 
-Specify actual implementation name if different from IR name.
-
-```toml
-[func.createUser]
-intent = "Create user"
-impl.bind = "backend_create_user"  # Look for this name in code
-```
-
-#### `impl.lang`
-
-Specify which language implements this symbol.
+- **`impl.bind`**: Actual symbol name in source code if different from the IR name.
+- **`impl.lang`**: Target implementation language: `"rust"`, `"ts"`, `"c"`, `"zig"`, `"either"`, or omit for default workspace languages.
+- **`impl.path`**: Implementation module/container path (matched by path segments across `::`, `.`, or `/`, e.g., `"models::user"` or `"ui.workspace.tree"`).
 
 ```toml
-[func.readFile]
-impl.lang = "rust"  # Only implemented in Rust
+[schema.User]
+kind = "node"
+fields = { id = "string", name = "string" }
+impl.bind = "UserModel"
+impl.lang = "rust"
+impl.path = "models::user"
 
-[schema.UIComponent]
-impl.lang = "ts"    # Only in TypeScript
-
-[func.sharedUtil]
-impl.lang = "either"  # Can be in either language
+[func.authenticate]
+intent = "Authenticate user credentials"
+input = ["schema.Credentials"]
+output = ["schema.User"]
+impl.bind = "authenticate_user"
+impl.lang = "rust"
+impl.path = "services::auth"
 ```
 
-Values: `"ts"`, `"rust"`, `"either"`, or omit for both.
+#### External Mapping File (`.surv/mapping.toml`)
 
-#### `impl.path`
-
-Specify namespace/module path in implementation.
+For larger projects or automated Code ↔ IR workflows, symbol bindings can also be stored in a mapping TOML file passed via `surc diff <ir> <workspace> --mapping .surv/mapping.toml`:
 
 ```toml
-[func.readFile]
-impl.path = "file_ops::io"  # Rust: file_ops::io module
+version = "0.1"
 
-[schema.TreeNode]
-impl.path = "ui.workspace.tree"  # TS: ui/workspace/tree
+[[entries]]
+stable_id = "func:services::auth::authenticate_user"
+surv_ref = "func.authenticate"
+impl_lang = "rust"
+impl_path = "services::auth::authenticate_user"
+source_file = "src/services/auth.rs"
+symbol_name = "authenticate_user"
+kind = "Function"
+confidence = 1.0
 ```
-
-#### Use Case: Drift Detection
-
-```bash
-surc diff-impl design.toml ./src --mod user_api
-```
-
-Compares IR against actual code using LSP, detecting:
-- **Missing**: In IR but not in code
-- **Ambiguous**: Multiple candidates found
-- **Extra**: In code but not in IR
 
 ---
 
 ## Project Organization
 
-### Packages
+### Packages & Manifests (`surv.toml`)
 
-Large projects can be split into packages.
-
-#### surv.toml (Project Manifest)
+Multi-file projects are coordinated by a `surv.toml` manifest at the project root:
 
 ```toml
 [project]
@@ -470,209 +423,163 @@ name = "my_app"
 [paths]
 ir_root = "design"
 
-[packages.frontend]
-root = "design/ui"
-namespace = "app.ui"
-depends = ["common"]
+[packages.common]
+root = "design/common"
+namespace = "app.common"
+depends = []
 
 [packages.backend]
-root = "design/api"
-namespace = "app.api"
+root = "design/backend"
+namespace = "app.backend"
 depends = ["common"]
 
-[packages.common]
-root = "design/shared"
-namespace = "app.common"
+[packages.frontend]
+root = "design/frontend"
+namespace = "app.ui"
+depends = ["common", "backend"]
 ```
 
-#### Package Anatomy
-
-- **root**: Directory containing IR files for this package
-- **namespace**: Default namespace for symbols in this package
-- **depends**: Other packages this one depends on
+- **`[project]`**: Project name.
+- **`[paths].ir_root`**: Base directory scanned recursively for `.toml` IR files.
+- **`[packages.<name>]`**:
+  - `root`: Directory path (relative to `surv.toml`) owning this package's IR files.
+  - `namespace`: Default namespace for files in this package.
+  - `depends`: List of package names this package is allowed to reference.
 
 ### Namespaces
 
-Namespaces prevent naming conflicts.
-
-```toml
-# In file under packages.frontend
-package = "frontend"
-namespace = "app.ui"
-
-[schema.Button]  # Fully qualified: app.ui.Button
-kind = "node"
-fields = {label = "string"}
-```
-
-### Manifests
-
-The manifest (`surv.toml`) is required for:
-- Multi-package projects
-- Cross-package references
-- Project-wide exports (modules graph, HTML visualization)
-
-#### Commands
-
-```bash
-surc project-check surv.toml           # Validate entire project
-surc export modules surv.toml          # Module dependency graph
-surc export schemas surv.toml          # Schema relationship graph
-surc export html surv.toml > viz.html  # Interactive visualization
-```
+If a file declares `namespace = "app.backend"` (or inherits it from its package), all definitions in that file belong to `app.backend`:
+- Local references (`"schema.User"`) automatically resolve within the same file/package first.
+- Cross-package references use either the target package prefix (`"common.schema.Id"`), import alias, or full namespace (`"app.common.schema.Id"`).
 
 ---
 
 ## Reference Resolution
 
-### Namespace Behavior (Strict Rules)
+When resolving a reference (`schema.*`, `func.*`, or `mod.*`):
 
-#### 1. Namespace Prefixing
+1. **Local Package / Namespace Match**: Searches symbols defined in the current file and package first.
+2. **Imported Package / Alias Match**: If prefixed with an imported package name or `import = ["pkg as alias"]`, resolves within that target package (and verifies that the dependency is declared in `surv.toml`).
+3. **Global Unique Match**: Falls back to global symbol table lookup; reports an `Ambiguous*` diagnostic if multiple packages define the same unqualified symbol.
 
-When a file declares `namespace = "X"`, **all local identifiers are prefixed**:
+---
 
-```toml
-namespace = "user"
+## Validation Rules
 
-[schema.Profile]
-# Resolved as: user.schema.Profile
+`surc check <path>` performs static analysis depending on the target type:
 
-[func.authenticate]
-# Resolved as: user.func.authenticate
+### Single-File Checks (`check_surv_file`)
+1. **Undefined References**: All `schema.*`, `func.*`, and `submods` referenced in functions, edges, boundaries, and modules must exist.
+2. **Pipeline Integrity**:
+   - Every function in `pipeline` must be listed in the module's `funcs`.
+   - Adjacent pipeline steps (`A -> B`) are checked for schema flow compatibility (warning if `A.output` and `B.input` are disjoint when both are non-empty).
+   - Detects cycles in sequential pipeline definitions.
+3. **Unused Definitions**: Emits warnings for `schema.*` or `func.*` sections not referenced by any module or schema.
+
+### Project-Wide Checks (`check_project`)
+1. **Package Assignment**: Validates that declared `package = "..."` headers match `surv.toml`.
+2. **Duplicate Symbols**: Detects colliding symbol definitions within the same package and namespace.
+3. **Cross-Package Resolution & Imports**: Verifies all cross-file `schema.*`, `func.*`, and `require = ["mod.*"]` references and checks for module dependency cycles.
+
+### Implementation Drift Checks (`surc diff`)
+1. **Missing / Extra / Ambiguous Symbols**: Matches IR symbols against source code via static analysis (Tree-sitter for Rust/TypeScript, built-in analyzers for C/Zig) or LSP (`--strategy lsp`).
+2. **Function Signature Comparison**: Verifies parameter count and input/output schema compatibility against implementation function signatures.
+3. **Schema Field Comparison**: Verifies struct/interface fields (missing fields, extra fields, and field type mismatches).
+
+---
+
+## Tooling (`surc` CLI)
+
+```bash
+# 1. Unified validation (single IR file, surv.toml manifest, or deploy.toml)
+surc check api.toml
+surc check surv.toml
+surc check deploy.toml
+surc check api.toml --ast              # Dump parsed AST as JSON
+
+# 2. Inspection & structural queries
+surc inspect mod.user_api api.toml     # Module overview (schemas, funcs, pipeline, status)
+surc inspect surv.toml                 # Project package & namespace overview
+surc slice mod.user_api api.toml --with-defs --closure
+surc refs schema.User surv.toml
+surc trace func.createUser api.toml --both
+
+# 3. Implementation drift detection & skeleton generation
+surc diff surv.toml ./src
+surc diff api.toml ./src --mod user_api --lang rust
+surc init-ir ./src --exclude-tests > skeleton.toml
+surc skeleton code api.toml --lang rust
+
+# 4. Visualization & CI codegen
+surc export pipeline api.toml user_api
+surc export modules surv.toml
+surc export schemas api.toml
+surc export html surv.toml > viz.html
+surc codegen github-actions deploy.toml > .github/workflows/deploy.yml
+
+# 5. Implementation status tracking
+surc status init api.toml
+surc status sync api.toml
+surc status set mod.user_api api.toml --state partial --coverage 0.7
+surc status list api.toml
 ```
-
-#### 2. Import (Syntactic Convenience)
-
-Import declarations make name resolution easier but **do not affect actual resolution**.
-
-```toml
-import = ["auth.schema.Token as AuthToken"]
-
-[func.validateToken]
-input = ["AuthToken"]  # Same as "auth.schema.Token"
-```
-
-**Checker behavior:**
-- Validates that imported symbols exist
-- Warns if import references non-existent symbols
-- Does not prevent resolution—purely for readability
-
-#### 3. Require (Semantic Dependency)
-
-Require declares **module dependencies** that must exist in the project.
-
-```toml
-require = ["mod.auth", "mod.storage"]
-```
-
-**Resolution:**
-- Validated by `ProjectChecker` across entire project
-- **Unresolved require** → Error
-- **Circular dependencies** → Error
-- If all modules in a file share the same requires, ProjectChecker expands this to edges between each module
-
-**Format Rules:**
-- Each element must be `"mod.<name>"` (single reference)
-- No chaining syntax: ~~`"mod.a → mod.b"`~~ ❌
-
-### Reference Syntax
-
-```toml
-# Local reference (in same file)
-input = ["schema.User"]
-
-# Namespaced reference (if file has namespace = "api")
-# Local schema.User resolves to api.schema.User
-
-# Fully qualified reference (across namespaces)
-input = ["auth.schema.Token"]
-
-# Using import alias
-import = ["auth.schema.Token as AuthToken"]
-input = ["AuthToken"]  # Equivalent to above
-```
-
-### Resolution Priority
-
-1. **Exact match**: If reference includes namespace prefix, use that
-2. **Local namespace**: If current file has namespace, prefix local references
-3. **Cross-namespace**: Requires fully qualified name or import alias
 
 ---
 
 ## Examples
 
-### Example 1: Simple API
+### Example 1: REST API with Pipeline & Status
 
 ```toml
+[meta]
+name = "book_api"
+version = "0.1.0"
+
 [schema.Book]
 kind = "node"
 role = "entity"
-fields = {id = "uuid", title = "string", author = "string", isbn = "string"}
+fields = { id = "uuid", title = "string", author = "string", isbn = "string" }
+impl.lang = "rust"
+impl.path = "models::book"
 
 [schema.CreateBookRequest]
 kind = "node"
 role = "request"
-fields = {title = "string", author = "string", isbn = "string"}
+fields = { title = "string", author = "string", isbn = "string" }
+
+[func.validateBook]
+intent = "Validate book request payload"
+input = ["schema.CreateBookRequest"]
+output = ["schema.CreateBookRequest"]
 
 [func.createBook]
-intent = "Create a new book"
+intent = "Persist a new book entity"
 input = ["schema.CreateBookRequest"]
 output = ["schema.Book"]
-
-[func.getBookById]
-intent = "Retrieve book by ID"
-input = ["schema.BookId"]
-output = ["schema.Book"]
+impl.bind = "create_book"
+impl.lang = "rust"
+impl.path = "handlers::book"
 
 [mod.book_api]
 purpose = "Book management REST API"
 schemas = ["schema.Book", "schema.CreateBookRequest"]
-funcs = ["func.createBook", "func.getBookById"]
-pipeline = ["func.createBook"]
-boundary = {http = ["POST /books", "GET /books/:id"]}
+funcs = ["func.validateBook", "func.createBook"]
+pipeline = ["func.validateBook -> func.createBook"]
+boundary = { http = ["POST /books"] }
+
+[status]
+updated_at = "2026-11-18"
+
+[status.mod.book_api]
+state = "partial"
+coverage = 0.8
+notes = "POST /books implemented"
 ```
 
-### Example 2: Event-Driven System
+### Example 2: Multi-Package Project
 
 ```toml
-[schema.Order]
-kind = "node"
-role = "entity"
-fields = {id = "uuid", items = "OrderItem[]", total = "float"}
-
-[schema.OrderPlaced]
-kind = "node"
-role = "event"
-fields = {order_id = "uuid", timestamp = "timestamp"}
-
-[schema.PaymentProcessed]
-kind = "node"
-role = "event"
-fields = {order_id = "uuid", amount = "float"}
-
-[func.placeOrder]
-intent = "Place a new order"
-input = ["schema.Order"]
-output = ["schema.OrderPlaced"]
-
-[func.processPayment]
-intent = "Process payment for order"
-input = ["schema.OrderPlaced"]
-output = ["schema.PaymentProcessed"]
-
-[mod.order_workflow]
-purpose = "Order processing pipeline"
-schemas = ["schema.Order", "schema.OrderPlaced", "schema.PaymentProcessed"]
-funcs = ["func.placeOrder", "func.processPayment"]
-pipeline = ["func.placeOrder", "func.processPayment"]
-boundary = {events = ["order.placed", "payment.processed"]}
-```
-
-### Example 3: Multi-Package Project
-
-```toml
-# surv.toml
+# --- surv.toml ---
 [project]
 name = "ecommerce"
 
@@ -687,142 +594,41 @@ namespace = "ecom.catalog"
 root = "ir/orders"
 namespace = "ecom.orders"
 depends = ["catalog"]
+```
 
-# ir/catalog/products.toml
+```toml
+# --- ir/catalog/products.toml ---
 package = "catalog"
 namespace = "ecom.catalog"
 
 [schema.Product]
 kind = "node"
 role = "entity"
-fields = {id = "uuid", name = "string", price = "float"}
+fields = { id = "uuid", name = "string", price = "float" }
 
-# ir/orders/orders.toml
+[mod.catalog_service]
+purpose = "Product catalog domain"
+schemas = ["schema.Product"]
+```
+
+```toml
+# --- ir/orders/orders.toml ---
 package = "orders"
 namespace = "ecom.orders"
-require = ["catalog"]
+import = ["catalog"]
+require = ["mod.catalog_service"]
 
 [schema.OrderItem]
 kind = "node"
 role = "value"
-fields = {product = "ecom.catalog.schema.Product", quantity = "int"}
+fields = { product = "catalog.schema.Product", quantity = "int" }
 
 [schema.Order]
 kind = "node"
 role = "entity"
-fields = {id = "uuid", items = "OrderItem[]"}
+fields = { id = "uuid", items = "OrderItem[]" }
+
+[mod.order_service]
+purpose = "Order processing service"
+schemas = ["schema.OrderItem", "schema.Order"]
 ```
-
-### Example 4: With Implementation Metadata
-
-```toml
-[schema.User]
-kind = "node"
-role = "entity"
-fields = {id = "uuid", name = "string"}
-impl.bind = "UserModel"
-impl.lang = "rust"
-impl.path = "models::user"
-
-[func.authenticate]
-intent = "Authenticate user credentials"
-input = ["schema.Credentials"]
-output = ["schema.AuthToken"]
-impl.bind = "auth_service::authenticate"
-impl.lang = "rust"
-
-[func.renderUserProfile]
-intent = "Render user profile UI"
-input = ["schema.User"]
-output = ["schema.ProfileView"]
-impl.lang = "ts"
-impl.path = "ui.profile"
-
-[mod.auth]
-purpose = "Authentication module"
-schemas = ["schema.User", "schema.AuthToken"]
-funcs = ["func.authenticate"]
-pipeline = ["func.authenticate"]
-
-[status]
-updated_at = "2026-01-14"
-
-[status.mod.auth]
-state = "partial"
-coverage = 0.7
-notes = "Login flow done, registration pending"
-```
-
----
-
-## Validation Rules
-
-The `surc check` command validates:
-
-1. **Schema references**: All referenced schemas must exist
-2. **Function references**: All referenced functions must exist
-3. **Edge constraints**: Edges must have valid `from` and `to`
-4. **Module completeness**: All schemas/funcs in pipeline must be declared
-5. **Package consistency**: Files must belong to declared packages
-6. **Namespace collisions**: No duplicate symbols within a namespace
-
----
-
-## Tooling
-
-### CLI Commands
-
-```bash
-# Single file operations
-surc check api.toml                    # Validate
-surc parse api.toml                    # Output AST as JSON
-surc inspect mod.user_api api.toml     # Inspect module details
-surc export pipeline api.toml user_api # Mermaid diagram
-
-# Project operations (requires surv.toml)
-surc project-check surv.toml           # Validate entire project
-surc export modules surv.toml          # Module graph
-surc export schemas surv.toml          # Schema graph
-surc export html surv.toml > viz.html  # Interactive HTML
-
-# Status tracking
-surc status init api.toml
-surc status set mod.user_api api.toml --state partial
-
-# Drift detection
-surc diff-impl design.toml ./src
-surc diff-impl design.toml ./src --mod user_api --lang rust
-```
-
----
-
-## Version History
-
-### v1.1 (2026-01-14)
-- Added `[status]` section for implementation tracking
-- Added `impl.bind`, `impl.lang`, `impl.path` for drift detection
-- Added `surc diff-impl` command
-- Improved documentation
-
-### v1.0 (Initial Release)
-- Core constructs: schema, func, mod
-- Package and namespace support
-- Manifest-based projects
-- Visualization exports
-
----
-
-## Future Considerations
-
-- **Generics**: `schema.List<T>`
-- **Constraints**: Field validators, invariants
-- **Effects**: Side-effect annotations for functions
-- **Deployment IR**: Separate spec for deployment pipelines (already implemented as Deploy IR)
-- **Code generation**: Template-based code generation from IR
-
----
-
-## License
-
-[To be determined for OSS release]
-
