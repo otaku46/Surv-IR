@@ -92,7 +92,6 @@ fn print_status_usage() {
 }
 
 fn run_status_init(filename: &str) -> Result<(), Box<dyn Error>> {
-    let content = fs::read_to_string(filename)?;
     let file = File::open(filename)?;
     let parsed = parse_surv_file(file)?;
 
@@ -415,7 +414,6 @@ fn run_status_show(module_name: &str, filename: &str) -> Result<(), Box<dyn Erro
     Ok(())
 }
 fn run_status_sync(filename: &str) -> Result<(), Box<dyn Error>> {
-    let content = fs::read_to_string(filename)?;
     let file = File::open(filename)?;
     let parsed = parse_surv_file(file)?;
 

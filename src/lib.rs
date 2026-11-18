@@ -22,7 +22,7 @@ pub use deploy::{check_deploy_file, parse_deploy_file};
 pub use diagnostic::Diagnostic;
 pub use export::{HtmlExporter, MermaidExporter};
 pub use imports::{parse_imports_with_alias, FileImportContext, ImportEntry};
-pub use loader::load_project;
+pub use loader::{load_manifest, load_project};
 pub use manifest::Manifest;
 pub use package::{assign_packages_to_files, PackageAssignment};
 pub use parser::{parse_file, parse_surv_file, parse_surv_ir};

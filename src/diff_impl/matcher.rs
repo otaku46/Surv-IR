@@ -6,10 +6,11 @@ use super::types::{
     SignatureMismatch, SymbolKind,
 };
 use crate::ast::Section;
-use crate::loader::load_project;
+use crate::loader::{load_manifest, load_project};
 use crate::parser::parse_file;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::fs;
 use std::path::Path;
 
 /// Main entry point for diff-impl
@@ -42,6 +43,47 @@ pub fn diff_impl(
     Ok(result)
 }
 
+/// Scan workspace symbols directly for Code -> IR skeleton generation without requiring an existing IR file.
+pub fn scan_workspace_for_skeleton(
+    workspace_root: &Path,
+    language: &str,
+    strategy: &str,
+) -> Result<DiffResult, Box<dyn Error>> {
+    let found = if strategy == "lsp" {
+        query_workspace_symbols_lsp(workspace_root, language, &[])?
+    } else {
+        query_workspace_symbols_static(workspace_root, language)?
+    };
+
+    let extra = found
+        .into_iter()
+        .filter(is_relevant_symbol)
+        .collect::<Vec<_>>();
+
+    Ok(DiffResult {
+        extra,
+        ..Default::default()
+    })
+}
+
+/// Extract expected symbols from an IR file/manifest for IR -> Code stub generation without scanning a workspace.
+pub fn extract_ir_for_code_skeleton(
+    ir_file: &Path,
+    filter_mod: Option<&str>,
+    language: &str,
+) -> Result<DiffResult, Box<dyn Error>> {
+    let expected = extract_expected_symbols(ir_file, filter_mod)?;
+    let missing = expected
+        .into_iter()
+        .filter(|exp| matches!(language, "both" | "all") || exp.matches_language(language))
+        .collect::<Vec<_>>();
+
+    Ok(DiffResult {
+        missing,
+        ..Default::default()
+    })
+}
+
 /// Query symbols using static analysis (Tree-sitter)
 fn query_workspace_symbols_static(
     workspace_root: &Path,
@@ -56,19 +98,37 @@ fn extract_expected_symbols(
     ir_file: &Path,
     filter_mod: Option<&str>,
 ) -> Result<Vec<ExpectedSymbol>, Box<dyn Error>> {
-    if is_manifest_path(ir_file) {
-        if let Ok(project) = load_project(ir_file) {
-            let sections = project
-                .files
-                .iter()
-                .flat_map(|(_, file)| file.sections.clone())
-                .collect::<Vec<_>>();
-            return extract_expected_symbols_from_sections(&sections, filter_mod);
-        }
+    if should_load_as_manifest(ir_file)? {
+        let project = load_project(ir_file)?;
+        let sections = project
+            .files
+            .iter()
+            .flat_map(|(_, file)| file.sections.clone())
+            .collect::<Vec<_>>();
+        return extract_expected_symbols_from_sections(&sections, filter_mod);
     }
 
     let parsed = parse_file(ir_file)?;
     extract_expected_symbols_from_sections(&parsed.sections, filter_mod)
+}
+
+fn should_load_as_manifest(ir_file: &Path) -> Result<bool, Box<dyn Error>> {
+    if load_manifest(ir_file).is_ok() {
+        return Ok(true);
+    }
+    if is_manifest_path(ir_file) {
+        let raw = fs::read_to_string(ir_file)?;
+        let has_manifest_section = raw.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == "[project]" || trimmed == "[paths]" || trimmed.starts_with("[packages.")
+        });
+        if has_manifest_section {
+            // Trigger manifest validation error so callers see why surv.toml failed
+            load_manifest(ir_file)?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn extract_expected_symbols_from_sections(
@@ -321,7 +381,7 @@ fn match_symbols(
                 if let Some(mismatch) = compare_schema_fields(exp, candidates[0]) {
                     result.schema_field_mismatches.push(mismatch);
                 }
-                matched_found.insert(candidates[0].name.clone());
+                matched_found.insert(found_symbol_key(candidates[0]));
             }
             _ => {
                 // Ambiguous
@@ -330,7 +390,7 @@ fn match_symbols(
                     candidates.iter().map(|&s| (*s).clone()).collect(),
                 ));
                 for candidate in &candidates {
-                    matched_found.insert(candidate.name.clone());
+                    matched_found.insert(found_symbol_key(candidate));
                 }
             }
         }
@@ -340,7 +400,7 @@ fn match_symbols(
     // Note: This can be very noisy, so we'll be conservative
     // Only report symbols that look like they could be expected
     for symbol in found {
-        if !matched_found.contains(&symbol.name) {
+        if !matched_found.contains(&found_symbol_key(symbol)) {
             // Filter noise: only include types that match our expectations
             if is_relevant_symbol(symbol) {
                 result.extra.push(symbol.clone());
@@ -349,6 +409,16 @@ fn match_symbols(
     }
 
     result
+}
+
+fn found_symbol_key(symbol: &FoundSymbol) -> (&str, &str, u32, u32, &str) {
+    (
+        symbol.uri.as_str(),
+        symbol.kind.as_str(),
+        symbol.range.start_line,
+        symbol.range.start_char,
+        symbol.name.as_str(),
+    )
 }
 
 fn find_candidates<'a>(
@@ -388,27 +458,7 @@ fn find_candidates<'a>(
             if symbol_kind_matches(symbol, exp) {
                 // Check impl.path if specified
                 if let Some(expected_path) = &exp.impl_path {
-                    let impl_path_matches = symbol
-                        .impl_path
-                        .as_deref()
-                        .map(|path| path.contains(expected_path) || expected_path.contains(path))
-                        .unwrap_or(false);
-                    let container_matches = symbol
-                        .container_name
-                        .as_deref()
-                        .map(|container| {
-                            container.contains(expected_path) || expected_path.contains(container)
-                        })
-                        .unwrap_or(false);
-                    let module_matches = symbol
-                        .module_path
-                        .as_deref()
-                        .map(|module| {
-                            module.contains(expected_path) || expected_path.contains(module)
-                        })
-                        .unwrap_or(false);
-
-                    if impl_path_matches || container_matches || module_matches {
+                    if symbol_matches_expected_path(symbol, expected_path) {
                         candidates.push(*symbol);
                     }
                 } else {
@@ -419,6 +469,59 @@ fn find_candidates<'a>(
     }
 
     candidates
+}
+
+fn split_path_segments(path: &str) -> Vec<&str> {
+    path.split([':', '.', '/', '\\'])
+        .filter(|seg| !seg.is_empty())
+        .collect()
+}
+
+fn segments_contain(haystack: &[&str], needle: &[&str]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|window| window == needle)
+}
+
+fn symbol_matches_expected_path(symbol: &FoundSymbol, expected_path: &str) -> bool {
+    let expected_segments = split_path_segments(expected_path);
+    if expected_segments.is_empty() {
+        return true;
+    }
+
+    let matches_field = |field: Option<&str>| -> bool {
+        let Some(value) = field else {
+            return false;
+        };
+        let actual_segments = split_path_segments(value);
+        segments_contain(&actual_segments, &expected_segments)
+    };
+
+    if matches_field(symbol.impl_path.as_deref())
+        || matches_field(symbol.module_path.as_deref())
+        || matches_field(symbol.relative_path.as_deref())
+    {
+        return true;
+    }
+
+    if let Some(container) = symbol.container_name.as_deref() {
+        let container_segments = split_path_segments(container);
+        if segments_contain(&container_segments, &expected_segments) {
+            return true;
+        }
+        // When only a short container name is available (e.g. from LSP without module_path),
+        // allow matching if the container matches the trailing segment(s) of expected_path.
+        if symbol.impl_path.is_none()
+            && symbol.module_path.is_none()
+            && !container_segments.is_empty()
+            && expected_segments.ends_with(&container_segments)
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn symbol_kind_matches(symbol: &FoundSymbol, expected: &ExpectedSymbol) -> bool {
@@ -775,5 +878,45 @@ mod tests {
         assert_eq!(mismatch.problems.len(), 2);
         assert!(mismatch.problems[0].contains("name"));
         assert!(mismatch.problems[1].contains("age"));
+    }
+
+    #[test]
+    fn keeps_unmatched_same_name_symbol_in_other_file_as_extra() {
+        let mut expected = expected_func(vec![], vec![]);
+        expected.impl_path = Some("alpha".to_string());
+
+        let mut found_alpha = found_func(vec![], None);
+        found_alpha.uri = "file:///tmp/alpha.rs".to_string();
+        found_alpha.relative_path = Some("src/alpha.rs".to_string());
+        found_alpha.module_path = Some("alpha".to_string());
+        found_alpha.impl_path = Some("alpha::processData".to_string());
+
+        let mut found_beta = found_func(vec![], None);
+        found_beta.uri = "file:///tmp/beta.rs".to_string();
+        found_beta.relative_path = Some("src/beta.rs".to_string());
+        found_beta.module_path = Some("beta".to_string());
+        found_beta.impl_path = Some("beta::processData".to_string());
+
+        let result = match_symbols(&[expected], &[found_alpha, found_beta], "rust", None);
+        assert_eq!(result.matched, 1);
+        assert_eq!(result.extra.len(), 1);
+        assert_eq!(result.extra[0].uri, "file:///tmp/beta.rs");
+    }
+
+    #[test]
+    fn matches_impl_path_by_segments_without_partial_token_false_positives() {
+        let mut symbol = found_func(vec![], None);
+        symbol.module_path = Some("superuser_handler".to_string());
+        symbol.impl_path = Some("superuser_handler::processData".to_string());
+        symbol.relative_path = Some("src/superuser_handler.rs".to_string());
+
+        assert!(!symbol_matches_expected_path(&symbol, "user"));
+
+        symbol.module_path = Some("ui::workspace::tree".to_string());
+        symbol.impl_path = Some("ui::workspace::tree::processData".to_string());
+        symbol.relative_path = Some("src/ui/workspace/tree.ts".to_string());
+
+        assert!(symbol_matches_expected_path(&symbol, "ui.workspace.tree"));
+        assert!(symbol_matches_expected_path(&symbol, "workspace::tree"));
     }
 }

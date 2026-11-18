@@ -2,7 +2,7 @@ use super::types::{FoundSymbol, SymbolRange};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -63,7 +63,10 @@ impl LspClient {
     }
 
     fn initialize(&mut self, workspace_root: &Path) -> Result<(), Box<dyn Error>> {
-        let workspace_uri = format!("file://{}", workspace_root.display());
+        let canonical_root = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+        let workspace_uri = format!("file://{}", canonical_root.display());
 
         let init_params = serde_json::json!({
             "processId": std::process::id(),
@@ -77,8 +80,8 @@ impl LspClient {
             }
         });
 
-        self.send_request("initialize", init_params)?;
-        let _response = self.read_response()?;
+        let req_id = self.send_request("initialize", init_params)?;
+        let _response = self.read_response(req_id)?;
 
         // Send initialized notification
         self.send_notification("initialized", serde_json::json!({}))?;
@@ -92,8 +95,8 @@ impl LspClient {
             "query": query
         });
 
-        self.send_request("workspace/symbol", params)?;
-        let response = self.read_response()?;
+        let req_id = self.send_request("workspace/symbol", params)?;
+        let response = self.read_response(req_id)?;
 
         // Parse response
         if let Some(result) = response.get("result") {
@@ -151,7 +154,7 @@ impl LspClient {
         })
     }
 
-    fn send_request(&mut self, method: &str, params: Value) -> Result<(), Box<dyn Error>> {
+    fn send_request(&mut self, method: &str, params: Value) -> Result<i64, Box<dyn Error>> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -163,7 +166,7 @@ impl LspClient {
         });
 
         self.write_message(&request)?;
-        Ok(())
+        Ok(id)
     }
 
     fn send_notification(&mut self, method: &str, params: Value) -> Result<(), Box<dyn Error>> {
@@ -188,42 +191,69 @@ impl LspClient {
         Ok(())
     }
 
-    fn read_response(&mut self) -> Result<Value, Box<dyn Error>> {
-        // Read headers
-        let mut content_length = 0;
-        loop {
-            let mut line = String::new();
-            self.stdout.read_line(&mut line)?;
-
-            if line == "\r\n" {
-                break;
-            }
-
-            if line.starts_with("Content-Length:") {
-                let parts: Vec<&str> = line.split(':').collect();
-                if parts.len() >= 2 {
-                    content_length = parts[1].trim().parse()?;
-                }
-            }
-        }
-
-        // Read content
-        let mut buffer = vec![0u8; content_length];
-        self.stdout.read_exact(&mut buffer)?;
-
-        let response: Value = serde_json::from_slice(&buffer)?;
-        Ok(response)
+    fn read_response(&mut self, expected_id: i64) -> Result<Value, Box<dyn Error>> {
+        read_response_from_reader(&mut self.stdout, expected_id)
     }
 
     pub fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
-        self.send_request("shutdown", serde_json::json!(null))?;
-        let _response = self.read_response()?;
+        let req_id = self.send_request("shutdown", serde_json::json!(null))?;
+        let _response = self.read_response(req_id)?;
 
         self.send_notification("exit", serde_json::json!({}))?;
 
         let _ = self.process.wait();
 
         Ok(())
+    }
+}
+
+fn read_message_from_reader<R: BufRead>(reader: &mut R) -> Result<Value, Box<dyn Error>> {
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            return Err("LSP server closed connection unexpectedly (EOF)".into());
+        }
+
+        if line == "\r\n" || line == "\n" {
+            if content_length.is_some() {
+                break;
+            }
+            continue;
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = Some(value.trim().parse()?);
+            }
+        }
+    }
+
+    let length = content_length.ok_or("Missing Content-Length header in LSP message")?;
+    let mut buffer = vec![0u8; length];
+    reader.read_exact(&mut buffer)?;
+
+    let message: Value = serde_json::from_slice(&buffer)?;
+    Ok(message)
+}
+
+fn read_response_from_reader<R: BufRead>(
+    reader: &mut R,
+    expected_id: i64,
+) -> Result<Value, Box<dyn Error>> {
+    loop {
+        let message = read_message_from_reader(reader)?;
+        if message.get("id").and_then(|v| v.as_i64()) == Some(expected_id) {
+            // Skip server-initiated requests that happen to carry a matching id AND a method field
+            if message.get("method").is_some() {
+                continue;
+            }
+            if let Some(err) = message.get("error") {
+                return Err(format!("LSP request {} failed: {}", expected_id, err).into());
+            }
+            return Ok(message);
+        }
     }
 }
 
@@ -264,4 +294,34 @@ fn symbol_kind_to_string(kind: i32) -> String {
         _ => "Unknown",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn frame_lsp_message(body: &str) -> String {
+        format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+    }
+
+    #[test]
+    fn skips_notifications_and_returns_matching_response() {
+        let notif = frame_lsp_message(r#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"indexing"}}"#);
+        let other_resp = frame_lsp_message(r#"{"jsonrpc":"2.0","id":1,"result":null}"#);
+        let target_resp = frame_lsp_message(r#"{"jsonrpc":"2.0","id":2,"result":[{"name":"foo"}]}"#);
+        let stream = format!("{notif}{other_resp}{target_resp}");
+
+        let mut reader = Cursor::new(stream.into_bytes());
+        let response = read_response_from_reader(&mut reader, 2).expect("matching response");
+        assert_eq!(response["id"], 2);
+        assert_eq!(response["result"][0]["name"], "foo");
+    }
+
+    #[test]
+    fn returns_error_on_eof_instead_of_looping() {
+        let mut reader = Cursor::new(Vec::<u8>::new());
+        let err = read_response_from_reader(&mut reader, 1).expect_err("should fail on EOF");
+        assert!(err.to_string().contains("EOF"));
+    }
 }

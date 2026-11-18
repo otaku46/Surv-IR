@@ -8,37 +8,50 @@
 # Install
 cargo install --path .
 
-# Validate a Surv IR file
+# Validate a Surv IR file, project manifest (surv.toml), or Deploy IR file
 surc check examples/todo_api.toml
+surc check design/surv.toml
+surc check examples/deploy.toml
 
-# Inspect a module
+# Inspect a module or project overview
 surc inspect mod.todo_api examples/todo_api.toml
+surc inspect design/surv.toml
+
+# Extract minimal IR fragment for an edit scope
+surc slice mod.todo_api examples/todo_api.toml --with-defs
+
+# Detect drift between IR and implementation
+surc diff examples/todo_api.toml .
+
+# Generate Surv IR skeleton from an existing codebase
+surc init-ir . --exclude-tests > skeleton.toml
 
 # Visualize architecture
-surc export html surv.toml > output.html
+surc export html design/surv.toml > output.html
 
 # Generate CI/CD pipeline
-surc codegen github-actions deploy.toml > .github/workflows/deploy.yml
+surc codegen github-actions examples/deploy.toml > .github/workflows/deploy.yml
 ```
 
 ## Documentation Index
 
 ### Getting Started
-- **[Installation & Usage](#installation)** - How to install and use surc
+- **[Installation & Usage](#installation)** - How to install and use `surc`
 - **[Quick Examples](#examples)** - Simple examples to get started
 
 ### Specifications
 - **[Surv IR Specification v1.1](Spec-Surv-IR-v1.1.md)** - Complete language specification
+- **[Surv Behavior IR Specification v0.1 (Draft)](behavior.md)** - State & behavioral specification
 - **[Deploy IR Specification v0.1](../Surv%20Deploy%20IR%20Specification%20v0.1.md)** - Deployment pipeline specification
 
 ### Guides
-- **[Pattern Catalog](PATTERN_CATALOG.md)** - 8 common patterns with templates (REST API, Database, Events, etc.)
-- **[Export Guide](EXPORT_GUIDE.md)** - Visualization options (Mermaid, HTML)
-- **[Deploy IR Guide](DEPLOY_IR_GUIDE.md)** - Deployment pipeline guide
-- **[Interactive HTML Guide](INTERACTIVE_HTML_GUIDE.md)** - Interactive visualization features
+- **[Pattern Catalog](docs/PATTERN_CATALOG.md)** - Common architecture patterns with templates
+- **[Export Guide](docs/EXPORT_GUIDE.md)** - Visualization options (Mermaid, HTML)
+- **[Deploy IR Guide](docs/DEPLOY_IR_GUIDE.md)** - Deployment pipeline guide
+- **[Interactive HTML Guide](docs/INTERACTIVE_HTML_GUIDE.md)** - Interactive visualization features
 
 ### For LLM/AI Agents
-- **[Writing Surv IR](SystemPrompt-Surv-IR-Author.md)** - System prompt for LLMs
+- **[Writing Surv IR](docs/SystemPrompt-Surv-IR-Author.md)** - System prompt for LLMs
 - **[Pattern Examples](examples/patterns/)** - Copy-paste ready patterns
 
 ### Development Guides
@@ -77,62 +90,111 @@ surc --help
 
 ---
 
+## Command Reference
+
+| Command | Description |
+| :--- | :--- |
+| `surc check <path> [--ast]` | Validate a single Surv IR file, project manifest (`surv.toml`), or Deploy IR file |
+| `surc inspect [target] <path>` | Inspect a module (`schemas`, `funcs`, `pipeline`, `status`) or project/file overview |
+| `surc slice <target> <path>` | Extract the minimal IR fragment for a target (`--with-defs`, `--closure`) |
+| `surc refs <target> <path>` | List all references to a `schema.*`, `func.*`, or `mod.*` symbol |
+| `surc trace <target> <path>` | Trace upstream/downstream pipeline & module data flow |
+| `surc diff <ir> <workspace>` | Detect drift between Surv IR and implementation (alias: `diff-impl`) |
+| `surc init-ir <workspace>` | Generate a Surv IR design skeleton from source code (`surc skeleton`) |
+| `surc skeleton code <ir>` | Generate implementation code stubs (`rust` / `ts`) from Surv IR |
+| `surc export <type> <path>` | Export Mermaid diagrams or interactive D3.js HTML |
+| `surc codegen <platform> <file>` | Generate CI/CD configuration (`github-actions`, `gitlab-ci`) |
+| `surc status <subcommand>` | Manage implementation status inside Surv IR files |
+
+---
+
 ## Usage
 
-### Surv IR Commands
+### 1. Validation & AST Dump (`surc check`)
+`surc check` automatically detects whether the input is a single Surv IR file, a multi-package `surv.toml` manifest, or a Deploy IR file:
 
-#### Validation
 ```bash
-# Check a single file
-surc check api.toml
+# Check a single Surv IR file
+surc check examples/todo_api.toml
 
-# Check entire project
-surc project-check surv.toml
+# Check an entire multi-package project
+surc check design/surv.toml
+
+# Check a Deploy IR pipeline file
+surc check examples/deploy.toml
+
+# Output parsed AST as JSON
+surc check examples/todo_api.toml --ast
 ```
 
-#### Inspection
+### 2. Inspection & Scoping (`inspect`, `slice`, `refs`, `trace`)
 ```bash
-# Inspect a module's schemas, functions, and pipeline
+# Inspect a module (argument order is flexible; works with single files or surv.toml)
 surc inspect mod.todo_api examples/todo_api.toml
-
-# Works with or without "mod." prefix
 surc inspect todo_api examples/todo_api.toml
 
-# Shows implementation status if [status] section exists
-surc inspect mod.todo_api examples/todo_with_status.toml
+# Inspect project packages or single-file summary
+surc inspect design/surv.toml
+surc inspect examples/todo_api.toml
+
+# Extract minimal IR fragment for a target
+surc slice mod.todo_api examples/todo_api.toml
+surc slice mod.todo_api examples/todo_api.toml --with-defs --closure
+
+# List all references to a symbol
+surc refs schema.Todo examples/todo_api.toml
+surc refs schema.Todo examples/todo_api.toml --kind func
+
+# Trace pipeline flow (upstream/downstream)
+surc trace func.createTodo examples/todo_api.toml --both
+surc trace mod.todo_api examples/todo_api.toml
 ```
 
-#### Dependency Analysis
+### 3. Implementation Drift & Skeleton Generation (`diff`, `init-ir`, `skeleton`)
 ```bash
-# Show package dependencies
-surc deps surv.toml
+# Detect drift between IR and implementation (Rust, TypeScript, C, Zig)
+surc diff examples/todo_api.toml .
+surc diff design/surv.toml . --mod ui_workspace_pane --lang ts
+surc diff design.toml . --format json
 
-# Show modules in a package
-surc deps surv.toml --package backend
+# Generate Surv IR design skeleton from an existing codebase (Code -> IR)
+surc init-ir . --exclude-tests > design_skeleton.toml
+surc skeleton design . --lang rust --exclude-tests
 
-# Show dependencies for a module
-surc deps surv.toml --module mod.user_api
-
-# Show only cross-package dependencies
-surc deps surv.toml --cross-package
-
-# Export as Mermaid diagram
-surc deps surv.toml --format mermaid > deps.md
+# Generate implementation stubs from Surv IR (IR -> Code)
+surc skeleton code examples/todo_api.toml --lang rust
+surc skeleton code examples/todo_api.toml ./src --lang ts
 ```
 
-#### File Splitting
+### 4. Visualization (`surc export`)
 ```bash
-# Split a single large IR file into multi-package project
-surc split large_api.toml --config split_config.toml
+# Export module pipeline or detailed module graph as Mermaid
+surc export pipeline examples/todo_api.toml todo_api
+surc export module-detail examples/todo_api.toml todo_api
 
-# This creates:
-# - output_dir/surv.toml (project manifest)
-# - output_dir/design/{package}/{file}.toml (split files)
-# - Automatic dependency closure for each module
-# - Warnings for shared symbols
+# Export module dependency graph or schema relationship graph (works on surv.toml or single file)
+surc export modules design/surv.toml
+surc export schemas examples/todo_api.toml
+
+# Export interactive HTML visualization (works on surv.toml, single IR file, or deploy.toml)
+surc export html design/surv.toml > viz.html
+surc export html examples/todo_api.toml > todo_viz.html
+surc export html examples/deploy.toml > deploy_viz.html
+
+# Export Deploy IR pipeline as Mermaid
+surc export deploy-mermaid examples/deploy.toml
 ```
 
-#### Status Management
+### 5. CI/CD Code Generation (`surc codegen`)
+```bash
+# Generate GitHub Actions workflow
+surc codegen github-actions examples/deploy.toml > .github/workflows/deploy.yml
+
+# Generate GitLab CI configuration
+surc codegen gitlab-ci examples/deploy.toml > .gitlab-ci.yml
+```
+
+### 6. Status Management (`surc status`)
 ```bash
 # Initialize status section for all modules
 surc status init examples/todo_api.toml
@@ -141,8 +203,7 @@ surc status init examples/todo_api.toml
 surc status sync examples/todo_api.toml
 
 # Update module status
-surc status set mod.todo_api examples/todo_api.toml --state partial
-surc status set mod.todo_api examples/todo_api.toml --coverage 0.6 --notes "create/get done"
+surc status set mod.todo_api examples/todo_api.toml --state partial --coverage 0.6 --notes "create/get done"
 
 # List all modules with status
 surc status list examples/todo_api.toml
@@ -151,175 +212,12 @@ surc status list examples/todo_api.toml
 surc status show mod.todo_api examples/todo_api.toml
 ```
 
-#### Visualization
-```bash
-# Export module pipeline
-surc export pipeline api.toml user_api
-
-# Export module dependencies (requires surv.toml)
-surc export modules surv.toml
-
-# Export schema relationships (requires surv.toml)
-surc export schemas surv.toml
-
-# Export interactive HTML (requires surv.toml)
-surc export html surv.toml > viz.html
-```
-
-#### Symbol Analysis
-
-```bash
-# List all references to a symbol
-surc refs schema.User design.toml
-
-# Extract minimal IR fragment for a target
-surc slice mod.user_api design.toml
-
-# Extract with full definitions
-surc slice mod.user_api design.toml --with-defs
-
-# Trace pipeline flow (upstream/downstream)
-surc trace func.createUser design.toml
-
-# Trace module connections
-surc trace mod.user_domain design.toml
-```
-
-#### Parsing
-```bash
-# Output AST as JSON
-surc parse api.toml
-```
-
-### Deploy IR Commands
-
-#### Validation
-```bash
-# Check deployment pipeline
-surc deploy-check deploy.toml
-```
-
-#### Visualization
-```bash
-# Export as Mermaid diagram
-surc export deploy-mermaid deploy.toml
-
-# Export as interactive HTML
-surc export deploy-html deploy.toml > pipeline.html
-```
-
-#### Code Generation
-```bash
-# Generate GitHub Actions workflow
-surc codegen github-actions deploy.toml > .github/workflows/deploy.yml
-
-# Generate GitLab CI configuration
-surc codegen gitlab-ci deploy.toml > .gitlab-ci.yml
-```
-
----
-
-## Examples
-
-### Example 1: Simple Todo API
-
-Create `todo.toml`:
-```toml
-[schema.Todo]
-kind = "node"
-role = "entity"
-fields = {id = "uuid", title = "string", completed = "bool"}
-
-[func.createTodo]
-intent = "Create new todo"
-input = ["schema.TodoRequest"]
-output = ["schema.Todo"]
-
-[mod.todo_api]
-purpose = "Todo REST API"
-schemas = ["schema.Todo"]
-funcs = ["func.createTodo"]
-boundary = {http = ["POST /todos"]}
-pipeline = ["func.createTodo"]
-```
-
-Validate and inspect:
-```bash
-surc check todo.toml
-surc inspect mod.todo_api todo.toml
-surc export pipeline todo.toml todo_api
-```
-
-### Example 2: Using Patterns
-
-Copy a pattern and customize:
-```bash
-cp examples/patterns/rest_api.toml my_api.toml
-# Edit my_api.toml to match your domain
-surc check my_api.toml
-```
-
-### Example 3: Tracking Implementation Status
-
-Track implementation progress directly in your Surv IR files:
-
-```bash
-# Initialize status for all modules
-surc status init my_api.toml
-
-# After adding new modules, sync status section
-surc status sync my_api.toml
-
-# Update as you implement
-surc status set mod.todo_api my_api.toml --state partial --coverage 0.6 --notes "create/get done"
-
-# View progress
-surc status list my_api.toml
-# Output:
-#   mod.todo_api             ◐ partial     60%  create/get done
-#   Last updated: 2026-01-14
-
-# View detailed status
-surc status show mod.todo_api my_api.toml
-# Output:
-#   Module: mod.todo_api
-#   Purpose: Todo API
-#   Status:
-#     State: partial
-#     Coverage: 60%
-#     Notes: create/get done
-#     Updated: 2026-01-14
-```
-
 Status states:
 - `todo` - Not started (☐)
 - `skeleton` - Types and boundaries only (◯)
 - `partial` - Partially implemented (◐)
 - `done` - Fully implemented (✓)
 - `blocked` - Blocked, needs redesign (✗)
-
-### Example 4: Deploy Pipeline
-
-Create `deploy.toml`:
-```toml
-[deploy.pipeline]
-name = "my-app"
-
-[deploy.job.build]
-requires = []
-runs = ["npm ci", "npm run build"]
-
-[deploy.job.deploy]
-requires = ["job.build"]
-runs = ["kubectl apply -f deploy.yaml"]
-uses_target = "target.prod"
-```
-
-Generate CI/CD:
-```bash
-surc deploy-check deploy.toml
-surc codegen github-actions deploy.toml > .github/workflows/deploy.yml
-```
 
 ---
 
@@ -331,10 +229,11 @@ For simple projects, use a single Surv IR file:
 ```bash
 surc check api.toml
 surc inspect mod.my_module api.toml
-surc export pipeline api.toml my_module
+surc slice mod.my_module api.toml --with-defs
+surc export html api.toml > viz.html
 ```
 
-### Multi-File Projects
+### Multi-Package Projects
 
 For larger projects, create a `surv.toml` manifest:
 
@@ -342,15 +241,25 @@ For larger projects, create a `surv.toml` manifest:
 [project]
 name = "my-project"
 
-[files]
-"api/user.toml" = {}
-"api/auth.toml" = {}
-"core/types.toml" = {}
+[paths]
+ir_root = "design"
+
+[packages.backend]
+root = "design/backend"
+namespace = "app.backend"
+depends = []
+
+[packages.frontend]
+root = "design/frontend"
+namespace = "app.frontend"
+depends = ["backend"]
 ```
 
-Then use project-level commands:
+Then run the same commands against `surv.toml`:
 ```bash
-surc project-check surv.toml
+surc check surv.toml
+surc inspect surv.toml
+surc diff surv.toml .
 surc export modules surv.toml
 surc export html surv.toml > viz.html
 ```
@@ -360,13 +269,11 @@ surc export html surv.toml > viz.html
 ## Features
 
 ### ✅ Surv IR
-- **Validation**: Static analysis with helpful diagnostics
-- **Inspection**: View module schemas, functions, and pipeline
-- **Status Tracking**: Track implementation state per module in IR files
+- **Unified Validation**: Single command (`surc check`) for files, multi-package projects, and Deploy IR
+- **Structural Querying**: `inspect`, `slice`, `refs`, and `trace` for navigating and extracting IR scopes
+- **Implementation Sync**: `surc diff` and `surc init-ir` / `surc skeleton` for bidirectional IR ↔ Code workflows
+- **Status Tracking**: Track implementation state per module directly in IR files
 - **Visualization**: Mermaid diagrams and interactive D3.js graphs
-- **Pattern Library**: 8 common patterns ready to use
-- **Multi-project**: Support for large codebases with manifests
-- **File Splitting**: Split large IR files into multi-package projects with automatic dependency closure
 
 ### ✅ Deploy IR
 - **Security Checks**: Secret scope, production gates, rollback validation
@@ -376,32 +283,12 @@ surc export html surv.toml > viz.html
 
 ---
 
-## Tips
-
-### Writing Surv IR
-
-1. **Start with patterns**: Browse `examples/patterns/` for templates
-2. **Validate early**: Run `surc check` after each section
-3. **Inspect often**: Use `surc inspect` to see module structure
-4. **Visualize often**: Use `surc export pipeline` to see the flow
-5. **Use LLMs**: See `PATTERN_CATALOG.md` for LLM-friendly prompts
-
-### Common Mistakes
+## Common Mistakes
 
 ❌ **Using `[schema.Book]` instead of `schema.Book` in references**
 ```toml
 output = ["[schema.Book]"]  # Wrong
 output = ["schema.Book"]     # Correct
-```
-
-❌ **Multiline arrays in module definitions**
-```toml
-schemas = [
-    "schema.A",
-    "schema.B"
-]  # May not parse correctly
-
-schemas = ["schema.A", "schema.B"]  # Correct
 ```
 
 ❌ **Missing schema/func prefix**
@@ -414,24 +301,10 @@ pipeline = ["func.createUser"]      # Correct
 
 ```bash
 surc --help                    # General help
-surc export --help             # Export subcommand help
 surc check --help              # Check command help
 surc inspect --help            # Inspect command help
+surc slice --help              # Slice command help
+surc diff --help               # Diff command help
+surc skeleton --help           # Skeleton / init-ir help
+surc export --help             # Export subcommand help
 ```
-
-See also:
-- [Pattern Catalog](PATTERN_CATALOG.md) for design patterns
-- [Specification](Spec-Surv-IR-v1.1.md) for complete syntax
-- [Examples](examples/) for working code
-
----
-
-## Contributing
-
-Found a bug or have a feature request? Please open an issue!
-
----
-
-## License
-
-[Your license here]
