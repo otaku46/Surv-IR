@@ -151,6 +151,7 @@ impl LspClient {
             detail: None,
             signature: None,
             fields: BTreeMap::new(),
+            fields_known: false,
         })
     }
 
@@ -196,13 +197,12 @@ impl LspClient {
     }
 
     pub fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
-        let req_id = self.send_request("shutdown", serde_json::json!(null))?;
-        let _response = self.read_response(req_id)?;
-
-        self.send_notification("exit", serde_json::json!({}))?;
-
+        // Do not wait for a shutdown response: a stuck or half-initialized
+        // server must not be able to block the CLI indefinitely.
+        let _ = self.send_request("shutdown", serde_json::json!(null));
+        let _ = self.send_notification("exit", serde_json::json!({}));
+        let _ = self.process.kill();
         let _ = self.process.wait();
-
         Ok(())
     }
 }
@@ -307,9 +307,12 @@ mod tests {
 
     #[test]
     fn skips_notifications_and_returns_matching_response() {
-        let notif = frame_lsp_message(r#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"indexing"}}"#);
+        let notif = frame_lsp_message(
+            r#"{"jsonrpc":"2.0","method":"window/logMessage","params":{"type":3,"message":"indexing"}}"#,
+        );
         let other_resp = frame_lsp_message(r#"{"jsonrpc":"2.0","id":1,"result":null}"#);
-        let target_resp = frame_lsp_message(r#"{"jsonrpc":"2.0","id":2,"result":[{"name":"foo"}]}"#);
+        let target_resp =
+            frame_lsp_message(r#"{"jsonrpc":"2.0","id":2,"result":[{"name":"foo"}]}"#);
         let stream = format!("{notif}{other_resp}{target_resp}");
 
         let mut reader = Cursor::new(stream.into_bytes());

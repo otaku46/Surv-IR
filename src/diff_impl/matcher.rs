@@ -5,13 +5,15 @@ use super::types::{
     DiffResult, ExpectedSymbol, FoundSymbol, FunctionSignature, MappingFile, SchemaFieldMismatch,
     SignatureMismatch, SymbolKind,
 };
-use crate::ast::Section;
-use crate::loader::{load_manifest, load_project};
-use crate::parser::parse_file;
-use std::collections::{HashMap, HashSet};
+use crate::ast::{ModSection, Section};
+use crate::loader::load_manifest;
+use crate::project::ProjectAST;
+use crate::project_checker::{load_ir_context, load_project_context, ProjectContext};
+use crate::symbol::{reference_candidates, SymbolEntry, SymbolKind as ResolveKind};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Main entry point for diff-impl
 pub fn diff_impl(
@@ -24,23 +26,103 @@ pub fn diff_impl(
 ) -> Result<DiffResult, Box<dyn Error>> {
     // 1. Parse IR file and extract expected symbols
     let expected = extract_expected_symbols(ir_file, filter_mod)?;
+    let (result, _) = diff_expected_symbols(
+        &expected,
+        workspace_root,
+        language,
+        strategy,
+        mapping_path,
+        true,
+    )?;
+    Ok(result)
+}
+
+/// Run diff analysis on a pre-built list of expected symbols, also returning matched FoundSymbols keyed by stable_id (or surv_name).
+pub(crate) fn diff_expected_symbols(
+    expected: &[ExpectedSymbol],
+    workspace_root: &Path,
+    language: &str,
+    strategy: &str,
+    mapping_path: Option<&Path>,
+    strict: bool,
+) -> Result<(DiffResult, HashMap<String, FoundSymbol>), Box<dyn Error>> {
+    if strict && !workspace_root.is_dir() {
+        return Err(format!("Workspace is not a directory: {}", workspace_root.display()).into());
+    }
     let mapping = if let Some(path) = mapping_path {
+        if strict && !path.is_file() {
+            return Err(format!("Mapping file is not a file: {}", path.display()).into());
+        }
         Some(load_mapping(path)?)
     } else {
         None
     };
 
-    // 2. Query symbols based on strategy
     let found = if strategy == "lsp" {
-        query_workspace_symbols_lsp(workspace_root, language, &expected)?
+        let mut symbols =
+            query_workspace_symbols_lsp(workspace_root, language, Some(expected), strict)?;
+        if strict && (!symbols.is_empty() || language == "all") {
+            // workspace/symbol only supplies identities. Read local declarations
+            // for the field and signature checks used by the plan overlay.
+            let declarations = query_workspace_symbols_static(workspace_root, language)?;
+            enrich_lsp_declarations(&mut symbols, &declarations);
+            if language == "all" {
+                symbols.extend(
+                    declarations
+                        .into_iter()
+                        .filter(|symbol| matches!(symbol.language.as_deref(), Some("c" | "zig"))),
+                );
+            }
+        }
+        symbols
     } else {
         query_workspace_symbols_static(workspace_root, language)?
     };
 
-    // 3. Match expected vs found
-    let result = match_symbols(&expected, &found, language, mapping.as_ref());
+    Ok(match_symbols_with_found(
+        expected,
+        &found,
+        language,
+        mapping.as_ref(),
+        strict,
+    ))
+}
 
-    Ok(result)
+fn enrich_lsp_declarations(symbols: &mut [FoundSymbol], declarations: &[FoundSymbol]) {
+    let mut by_file_and_name = HashMap::<_, Vec<_>>::new();
+    for declaration in declarations {
+        if let Some(path) = declaration.relative_path.as_deref() {
+            by_file_and_name
+                .entry((path, declaration.name.as_str()))
+                .or_default()
+                .push(declaration);
+        }
+    }
+    for symbol in symbols {
+        let Some(path) = symbol.relative_path.as_deref() else {
+            continue;
+        };
+        let Some(candidates) = by_file_and_name.get(&(path, symbol.name.as_str())) else {
+            continue;
+        };
+        let nearby: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                candidate.range.start_line <= symbol.range.start_line
+                    && symbol.range.start_line <= candidate.range.end_line
+            })
+            .collect();
+        let declaration = match (nearby.as_slice(), candidates.as_slice()) {
+            ([declaration], _) | ([], [declaration]) => *declaration,
+            _ => continue,
+        };
+        symbol.signature = declaration.signature.clone();
+        symbol.fields.clone_from(&declaration.fields);
+        symbol.fields_known = declaration.fields_known;
+        symbol.impl_path.clone_from(&declaration.impl_path);
+        symbol.module_path.clone_from(&declaration.module_path);
+    }
 }
 
 /// Scan workspace symbols directly for Code -> IR skeleton generation without requiring an existing IR file.
@@ -50,7 +132,7 @@ pub fn scan_workspace_for_skeleton(
     strategy: &str,
 ) -> Result<DiffResult, Box<dyn Error>> {
     let found = if strategy == "lsp" {
-        query_workspace_symbols_lsp(workspace_root, language, &[])?
+        query_workspace_symbols_lsp(workspace_root, language, None, false)?
     } else {
         query_workspace_symbols_static(workspace_root, language)?
     };
@@ -98,18 +180,322 @@ fn extract_expected_symbols(
     ir_file: &Path,
     filter_mod: Option<&str>,
 ) -> Result<Vec<ExpectedSymbol>, Box<dyn Error>> {
-    if should_load_as_manifest(ir_file)? {
-        let project = load_project(ir_file)?;
-        let sections = project
-            .files
-            .iter()
-            .flat_map(|(_, file)| file.sections.clone())
-            .collect::<Vec<_>>();
-        return extract_expected_symbols_from_sections(&sections, filter_mod);
+    let context = if should_load_as_manifest(ir_file)? {
+        load_project_context(ir_file)?
+    } else {
+        load_ir_context(ir_file)?
+    };
+    if let Some(diagnostic) = context
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.severity == "error")
+    {
+        return Err(format!(
+            "{}: [{}] {}",
+            diagnostic.location, diagnostic.kind, diagnostic.message
+        )
+        .into());
     }
+    let sections = section_map(&context.project);
+    let filter = filter_mod
+        .map(|module| compute_filter_closure(&context, &sections, module))
+        .transpose()?;
+    let module_refs = collect_module_refs_context(&context);
 
-    let parsed = parse_file(ir_file)?;
-    extract_expected_symbols_from_sections(&parsed.sections, filter_mod)
+    let mut expected = Vec::new();
+    for entry in &context.symbols.entries {
+        if let Some(filter) = &filter {
+            if !filter.contains(&entry.fq_name) {
+                continue;
+            }
+        }
+        let Some(section) =
+            sections.get(&(entry.file.clone(), entry.kind, entry.local_name.clone()))
+        else {
+            continue;
+        };
+        match (entry.kind, section) {
+            (ResolveKind::Schema, Section::Schema(schema)) => {
+                expected.push(ExpectedSymbol {
+                    stable_id: Some(entry.fq_name.clone()),
+                    surv_name: schema.name.clone(),
+                    surv_path: Some(format!("schema.{}", schema.name)),
+                    impl_bind: schema.impl_bind.clone(),
+                    impl_lang: schema.impl_lang.clone(),
+                    impl_path: schema.impl_path.clone(),
+                    module_refs: module_refs.get(&entry.fq_name).cloned().unwrap_or_default(),
+                    kind: SymbolKind::Schema,
+                    input: Vec::new(),
+                    output: Vec::new(),
+                    fields: schema.fields.clone(),
+                });
+            }
+            (ResolveKind::Func, Section::Func(func)) => {
+                expected.push(ExpectedSymbol {
+                    stable_id: Some(entry.fq_name.clone()),
+                    surv_name: func.name.clone(),
+                    surv_path: Some(format!("func.{}", func.name)),
+                    impl_bind: func.impl_bind.clone(),
+                    impl_lang: func.impl_lang.clone(),
+                    impl_path: func.impl_path.clone(),
+                    module_refs: module_refs.get(&entry.fq_name).cloned().unwrap_or_default(),
+                    kind: SymbolKind::Func,
+                    input: func.input.clone(),
+                    output: func.output.clone(),
+                    fields: Default::default(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(expected)
+}
+
+type SectionMap<'a> = HashMap<(PathBuf, ResolveKind, String), &'a Section>;
+
+fn section_map(project: &ProjectAST) -> SectionMap<'_> {
+    let mut map = HashMap::new();
+    for (path, file) in &project.files {
+        for section in &file.sections {
+            let Some((kind, name)) = section_kind_name(section) else {
+                continue;
+            };
+            map.insert((path.clone(), kind, name.to_string()), section);
+        }
+    }
+    map
+}
+
+fn section_kind_name(section: &Section) -> Option<(ResolveKind, &str)> {
+    match section {
+        Section::Schema(schema) => Some((ResolveKind::Schema, &schema.name)),
+        Section::Func(func) => Some((ResolveKind::Func, &func.name)),
+        Section::Mod(module) => Some((ResolveKind::Mod, &module.name)),
+        _ => None,
+    }
+}
+
+fn module_section<'a>(
+    context: &'a ProjectContext,
+    sections: &SectionMap<'a>,
+    module: &str,
+) -> Result<(&'a ModSection, &'a crate::imports::FileImportContext), Box<dyn Error>> {
+    let raw = module.strip_prefix("mod.").unwrap_or(module);
+    let matches: Vec<&SymbolEntry> = context
+        .symbols
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ResolveKind::Mod)
+        .filter(|entry| {
+            entry.local_name == raw
+                || entry.fq_name == module
+                || format!("mod.{}", entry.local_name) == module
+                || format!("{}.mod.{}", entry.package, entry.local_name) == module
+                || entry.namespace.as_ref().is_some_and(|namespace| {
+                    format!("{namespace}.mod.{}", entry.local_name) == module
+                })
+        })
+        .collect();
+    let entry = match matches.as_slice() {
+        [entry] => *entry,
+        [] => return Err(format!("Module '{module}' not found").into()),
+        _ => {
+            let names = matches
+                .iter()
+                .map(|entry| entry.fq_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("Ambiguous module '{module}'; candidates: {names}").into());
+        }
+    };
+    let section = sections
+        .get(&(
+            entry.file.clone(),
+            ResolveKind::Mod,
+            entry.local_name.clone(),
+        ))
+        .and_then(|section| match section {
+            Section::Mod(module) => Some(module),
+            _ => None,
+        })
+        .ok_or_else(|| format!("Module '{module}' has no section"))?;
+    let context = context
+        .contexts
+        .iter()
+        .find(|ctx| ctx.file_path == entry.file)
+        .ok_or_else(|| format!("Module '{module}' has no import context"))?;
+    Ok((section, context))
+}
+
+fn compute_filter_closure(
+    context: &ProjectContext,
+    sections: &SectionMap<'_>,
+    module_name: &str,
+) -> Result<HashSet<String>, Box<dyn Error>> {
+    let (module, import_context) = module_section(context, sections, module_name)?;
+    let mut closure = HashSet::new();
+    closure.insert(
+        context
+            .symbols
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.kind == ResolveKind::Mod
+                    && entry.local_name == module.name
+                    && entry.file
+                        == context
+                            .contexts
+                            .iter()
+                            .find(|ctx| std::ptr::eq(*ctx, import_context))
+                            .map(|ctx| ctx.file_path.clone())
+                            .unwrap_or_default()
+            })
+            .map(|entry| entry.fq_name.clone())
+            .unwrap_or_else(|| format!("mod.{}", module.name)),
+    );
+    for reference in &module.schemas {
+        add_candidates(
+            &mut closure,
+            &context.symbols,
+            ResolveKind::Schema,
+            reference,
+            import_context,
+        );
+    }
+    for reference in &module.funcs {
+        add_candidates(
+            &mut closure,
+            &context.symbols,
+            ResolveKind::Func,
+            reference,
+            import_context,
+        );
+    }
+    for reference in &module.submods {
+        add_candidates(
+            &mut closure,
+            &context.symbols,
+            ResolveKind::Mod,
+            &format!("mod.{}.{reference}", module.name),
+            import_context,
+        );
+    }
+    for reference in module.get_pipeline_calls() {
+        if let Some(func) = resolve_one(
+            &context.symbols,
+            ResolveKind::Func,
+            &reference,
+            import_context,
+        ) {
+            add_candidates(
+                &mut closure,
+                &context.symbols,
+                ResolveKind::Func,
+                &reference,
+                import_context,
+            );
+            let func_name = func.local_name.as_str();
+            if let Some((_, file)) = context
+                .project
+                .files
+                .iter()
+                .find(|(path, _)| path == &func.file)
+            {
+                for section in &file.sections {
+                    if let Section::Func(section) = section {
+                        if section.name == func_name {
+                            for schema in section.input.iter().chain(&section.output) {
+                                add_candidates(
+                                    &mut closure,
+                                    &context.symbols,
+                                    ResolveKind::Schema,
+                                    schema,
+                                    import_context,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(closure)
+}
+
+fn add_candidates(
+    closure: &mut HashSet<String>,
+    symbols: &crate::symbol::SymbolTable,
+    kind: ResolveKind,
+    reference: &str,
+    context: &crate::imports::FileImportContext,
+) {
+    for candidate in reference_candidates(symbols, kind, reference, context) {
+        closure.insert(candidate.fq_name.clone());
+    }
+}
+
+fn resolve_one<'a>(
+    symbols: &'a crate::symbol::SymbolTable,
+    kind: ResolveKind,
+    reference: &str,
+    context: &crate::imports::FileImportContext,
+) -> Option<&'a SymbolEntry> {
+    match reference_candidates(symbols, kind, reference, context).as_slice() {
+        [entry] => Some(*entry),
+        _ => None,
+    }
+}
+
+fn collect_module_refs_context(context: &ProjectContext) -> HashMap<String, Vec<String>> {
+    let mut refs: HashMap<String, Vec<String>> = HashMap::new();
+    for (path, file) in &context.project.files {
+        let Some(import_context) = context.contexts.iter().find(|ctx| &ctx.file_path == path)
+        else {
+            continue;
+        };
+        for section in &file.sections {
+            let Section::Mod(module) = section else {
+                continue;
+            };
+            let module_ref = format!("mod.{}", module.name);
+            for reference in &module.schemas {
+                for candidate in reference_candidates(
+                    &context.symbols,
+                    ResolveKind::Schema,
+                    reference,
+                    import_context,
+                ) {
+                    refs.entry(candidate.fq_name.clone())
+                        .or_default()
+                        .push(module_ref.clone());
+                }
+            }
+            for reference in &module.funcs {
+                for candidate in reference_candidates(
+                    &context.symbols,
+                    ResolveKind::Func,
+                    reference,
+                    import_context,
+                ) {
+                    refs.entry(candidate.fq_name.clone())
+                        .or_default()
+                        .push(module_ref.clone());
+                }
+            }
+        }
+    }
+    for modules in refs.values_mut() {
+        modules.sort();
+        modules.dedup();
+    }
+    refs
+}
+
+fn is_manifest_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name == "surv.toml")
+        .unwrap_or(false)
 }
 
 fn should_load_as_manifest(ir_file: &Path) -> Result<bool, Box<dyn Error>> {
@@ -131,169 +517,16 @@ fn should_load_as_manifest(ir_file: &Path) -> Result<bool, Box<dyn Error>> {
     Ok(false)
 }
 
-fn extract_expected_symbols_from_sections(
-    sections: &[Section],
-    filter_mod: Option<&str>,
-) -> Result<Vec<ExpectedSymbol>, Box<dyn Error>> {
-    let mut expected = Vec::new();
-    let module_refs = collect_module_refs(sections);
-
-    // If filter_mod is specified, compute reference closure
-    let included_refs = if let Some(mod_name) = filter_mod {
-        let mod_name = mod_name.strip_prefix("mod.").unwrap_or(mod_name);
-        compute_reference_closure(sections, mod_name)?
-    } else {
-        // Include all schemas and funcs
-        HashSet::new()
-    };
-
-    let use_filter = filter_mod.is_some();
-
-    // Extract schemas
-    for section in sections {
-        if let Section::Schema(schema) = section {
-            if use_filter && !included_refs.contains(&format!("schema.{}", schema.name)) {
-                continue;
-            }
-            let surv_ref = format!("schema.{}", schema.name);
-
-            expected.push(ExpectedSymbol {
-                stable_id: None,
-                surv_name: schema.name.clone(),
-                surv_path: Some(surv_ref.clone()),
-                impl_bind: schema.impl_bind.clone(),
-                impl_lang: schema.impl_lang.clone(),
-                impl_path: schema.impl_path.clone(),
-                module_refs: module_refs.get(&surv_ref).cloned().unwrap_or_default(),
-                kind: SymbolKind::Schema,
-                input: Vec::new(),
-                output: Vec::new(),
-                fields: schema.fields.clone(),
-            });
-        }
-    }
-
-    // Extract functions
-    for section in sections {
-        if let Section::Func(func) = section {
-            if use_filter && !included_refs.contains(&format!("func.{}", func.name)) {
-                continue;
-            }
-            let surv_ref = format!("func.{}", func.name);
-
-            expected.push(ExpectedSymbol {
-                stable_id: None,
-                surv_name: func.name.clone(),
-                surv_path: Some(surv_ref.clone()),
-                impl_bind: func.impl_bind.clone(),
-                impl_lang: func.impl_lang.clone(),
-                impl_path: func.impl_path.clone(),
-                module_refs: module_refs.get(&surv_ref).cloned().unwrap_or_default(),
-                kind: SymbolKind::Func,
-                input: func.input.clone(),
-                output: func.output.clone(),
-                fields: Default::default(),
-            });
-        }
-    }
-
-    Ok(expected)
-}
-
-fn is_manifest_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name == "surv.toml")
-        .unwrap_or(false)
-}
-
-fn collect_module_refs(sections: &[Section]) -> HashMap<String, Vec<String>> {
-    let mut refs: HashMap<String, Vec<String>> = HashMap::new();
-    for section in sections {
-        if let Section::Mod(module) = section {
-            let module_ref = format!("mod.{}", module.name);
-            for schema in &module.schemas {
-                refs.entry(schema.clone())
-                    .or_default()
-                    .push(module_ref.clone());
-            }
-            for func in &module.funcs {
-                refs.entry(func.clone())
-                    .or_default()
-                    .push(module_ref.clone());
-            }
-        }
-    }
-    refs
-}
-
-/// Compute reference closure for a module (similar to surc inspect)
-fn compute_reference_closure(
-    sections: &[Section],
-    mod_name: &str,
-) -> Result<HashSet<String>, Box<dyn Error>> {
-    let mut closure = HashSet::new();
-
-    // Find the module
-    let module = sections.iter().find_map(|s| {
-        if let Section::Mod(m) = s {
-            if m.name == mod_name {
-                Some(m)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    });
-
-    let module = module.ok_or_else(|| format!("Module 'mod.{}' not found", mod_name))?;
-
-    // Add direct references
-    for schema_ref in &module.schemas {
-        closure.insert(schema_ref.clone());
-    }
-
-    for func_ref in &module.funcs {
-        closure.insert(func_ref.clone());
-    }
-
-    // Add transitive references from functions (input/output schemas)
-    let mut to_process: Vec<String> = module.funcs.clone();
-    let mut processed = HashSet::new();
-
-    while let Some(func_ref) = to_process.pop() {
-        if processed.contains(&func_ref) {
-            continue;
-        }
-        processed.insert(func_ref.clone());
-
-        // Find the function
-        let func_name = func_ref.strip_prefix("func.").unwrap_or(&func_ref);
-        if let Some(Section::Func(func)) = sections.iter().find(|s| {
-            if let Section::Func(f) = s {
-                f.name == func_name
-            } else {
-                false
-            }
-        }) {
-            // Add input/output schemas
-            for schema_ref in func.input.iter().chain(func.output.iter()) {
-                closure.insert(schema_ref.clone());
-            }
-        }
-    }
-
-    Ok(closure)
-}
-
 /// Query LSP servers for workspace symbols
 fn query_workspace_symbols_lsp(
     workspace_root: &Path,
     language: &str,
-    expected: &[ExpectedSymbol],
+    expected: Option<&[ExpectedSymbol]>,
+    strict: bool,
 ) -> Result<Vec<FoundSymbol>, Box<dyn Error>> {
     let mut all_symbols = Vec::new();
+    let mut queried = false;
+    let mut last_error = None;
 
     let languages = if matches!(language, "both" | "all") {
         vec!["ts", "rust"]
@@ -303,34 +536,81 @@ fn query_workspace_symbols_lsp(
 
     for lang in languages {
         // Check if any expected symbols support this language
-        let has_expected_for_lang = expected
-            .iter()
-            .any(|exp: &ExpectedSymbol| exp.matches_language(lang));
-
-        if !has_expected_for_lang && matches!(language, "both" | "all") {
+        if matches!(language, "both" | "all")
+            && expected.is_some_and(|symbols| !symbols.iter().any(|exp| exp.matches_language(lang)))
+        {
             continue;
         }
 
-        match query_language_symbols(workspace_root, lang, expected) {
-            Ok(mut symbols) => all_symbols.append(&mut symbols),
+        match query_language_symbols(workspace_root, lang) {
+            Ok(mut symbols) => {
+                queried = true;
+                all_symbols.append(&mut symbols);
+            }
+            Err(e) if strict => return Err(format!("Failed to query {lang} symbols: {e}").into()),
             Err(e) => {
                 eprintln!("Warning: Failed to query {} symbols: {}", lang, e);
+                last_error = Some(e);
             }
         }
     }
 
+    if !queried {
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+    }
     Ok(all_symbols)
 }
 
 fn query_language_symbols(
     workspace_root: &Path,
     lang: &str,
-    _expected: &[ExpectedSymbol],
+) -> Result<Vec<FoundSymbol>, Box<dyn Error>> {
+    let workspace_root = workspace_root.to_path_buf();
+    let lang = lang.to_string();
+    let label = lang.clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result =
+            query_language_symbols_inner(&workspace_root, &lang).map_err(|error| error.to_string());
+        let _ = sender.send(result);
+    });
+    match receiver.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok(Ok(symbols)) => Ok(symbols),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(format!("LSP query for {label} timed out after 60s").into()),
+    }
+}
+
+fn query_language_symbols_inner(
+    workspace_root: &Path,
+    lang: &str,
 ) -> Result<Vec<FoundSymbol>, Box<dyn Error>> {
     let mut client = LspClient::new(lang, workspace_root)?;
 
-    // Query for all symbols (empty query returns all)
-    let symbols = client.workspace_symbol("")?;
+    // Query for all symbols (empty query returns all). Some servers return an
+    // empty result while indexing; retry briefly before treating it as empty.
+    let mut symbols = client.workspace_symbol("")?;
+    for _ in 0..3 {
+        if !symbols.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        symbols = client.workspace_symbol("")?;
+    }
+    let root = workspace_root.canonicalize().ok();
+    for symbol in &mut symbols {
+        symbol.language = Some(lang.to_string());
+        symbol.relative_path = lsp_types::Url::parse(&symbol.uri)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .and_then(|path| {
+                path.strip_prefix(root.as_ref()?)
+                    .ok()
+                    .map(|relative| relative.to_string_lossy().into_owned())
+            });
+    }
 
     client.shutdown()?;
 
@@ -338,12 +618,23 @@ fn query_language_symbols(
 }
 
 /// Match expected symbols against found symbols
+#[cfg(test)]
 fn match_symbols(
     expected: &[ExpectedSymbol],
     found: &[FoundSymbol],
     language: &str,
     mapping: Option<&MappingFile>,
 ) -> DiffResult {
+    match_symbols_with_found(expected, found, language, mapping, false).0
+}
+
+fn match_symbols_with_found(
+    expected: &[ExpectedSymbol],
+    found: &[FoundSymbol],
+    language: &str,
+    mapping: Option<&MappingFile>,
+    scoped: bool,
+) -> (DiffResult, HashMap<String, FoundSymbol>) {
     let mut result = DiffResult::default();
 
     // Create a map of found symbols by name for quick lookup
@@ -356,17 +647,71 @@ fn match_symbols(
     }
 
     let mut matched_found = HashSet::new();
+    let mut matches = HashMap::new();
+    let mut candidates_by_expected = Vec::new();
+    let mut claims = HashMap::new();
+    let mut packages_by_binding = HashMap::<_, BTreeSet<_>>::new();
+    if scoped {
+        for symbol in expected {
+            if let Some(package) = symbol.stable_id.as_deref().and_then(package_from_id) {
+                packages_by_binding
+                    .entry((&symbol.kind, symbol.search_name()))
+                    .or_default()
+                    .insert(package);
+            }
+        }
+    }
 
-    // Match each expected symbol
     for exp in expected {
-        // Skip if language doesn't match
         if !matches!(language, "both" | "all") && !exp.matches_language(language) {
             continue;
         }
+        let mut candidates = find_candidates(&found_map, found, exp, exp.search_name(), mapping);
+        if scoped {
+            candidates.retain(|symbol| {
+                symbol
+                    .language
+                    .as_deref()
+                    .is_none_or(|lang| exp.matches_language(lang))
+            });
+            if mapping_entry(mapping, exp).is_none() && exp.impl_path.is_none() {
+                let package = exp.stable_id.as_deref().and_then(package_from_id);
+                let packages = packages_by_binding.get(&(&exp.kind, exp.search_name()));
+                if let (Some(package), Some(packages)) = (package, packages.filter(|p| p.len() > 1))
+                {
+                    if package != "default"
+                        && candidates
+                            .iter()
+                            .any(|symbol| symbol_matches_expected_path(symbol, package))
+                    {
+                        candidates.retain(|symbol| symbol_matches_expected_path(symbol, package));
+                    } else {
+                        candidates.retain(|symbol| {
+                            !packages.iter().any(|other| {
+                                *other != package
+                                    && *other != "default"
+                                    && symbol_matches_expected_path(symbol, other)
+                            })
+                        });
+                    }
+                }
+            }
+            if let [only] = candidates.as_slice() {
+                *claims.entry(found_symbol_key(only)).or_insert(0) += 1;
+            }
+        }
+        candidates_by_expected.push((exp, candidates));
+    }
 
-        let search_name = exp.search_name();
-        let candidates = find_candidates(&found_map, found, exp, search_name, mapping);
-
+    for (exp, candidates) in candidates_by_expected {
+        if scoped && matches!(candidates.as_slice(), [only] if claims[&found_symbol_key(only)] > 1)
+        {
+            result
+                .ambiguous
+                .push((exp.clone(), vec![candidates[0].clone()]));
+            matched_found.insert(found_symbol_key(candidates[0]));
+            continue;
+        }
         match candidates.len() {
             0 => {
                 // Missing
@@ -375,6 +720,8 @@ fn match_symbols(
             1 => {
                 // Matched
                 result.matched += 1;
+                let key = exp.stable_id.as_ref().unwrap_or(&exp.surv_name).clone();
+                matches.insert(key, candidates[0].clone());
                 if let Some(mismatch) = compare_signature(exp, candidates[0]) {
                     result.signature_mismatches.push(mismatch);
                 }
@@ -408,7 +755,7 @@ fn match_symbols(
         }
     }
 
-    result
+    (result, matches)
 }
 
 fn found_symbol_key(symbol: &FoundSymbol) -> (&str, &str, u32, u32, &str) {
@@ -421,6 +768,35 @@ fn found_symbol_key(symbol: &FoundSymbol) -> (&str, &str, u32, u32, &str) {
     )
 }
 
+fn package_from_id(id: &str) -> Option<&str> {
+    let id = id.strip_prefix("pkg.")?;
+    [".schema.", ".func."]
+        .into_iter()
+        .filter_map(|marker| id.find(marker))
+        .min()
+        .map(|index| &id[..index])
+}
+
+fn mapping_entry<'a>(
+    mapping: Option<&'a MappingFile>,
+    exp: &ExpectedSymbol,
+) -> Option<&'a super::types::MappingEntry> {
+    let mapping = mapping?;
+    exp.stable_id
+        .as_deref()
+        .and_then(|id| {
+            mapping
+                .entries
+                .iter()
+                .find(|entry| entry.stable_id == id || entry.surv_ref == id)
+        })
+        .or_else(|| {
+            exp.surv_path
+                .as_deref()
+                .and_then(|path| find_by_surv_ref(mapping, path))
+        })
+}
+
 fn find_candidates<'a>(
     found_map: &'a HashMap<String, Vec<&'a FoundSymbol>>,
     found: &'a [FoundSymbol],
@@ -430,26 +806,24 @@ fn find_candidates<'a>(
 ) -> Vec<&'a FoundSymbol> {
     let mut candidates = Vec::new();
 
-    if let (Some(mapping), Some(surv_path)) = (mapping, exp.surv_path.as_deref()) {
-        if let Some(entry) = find_by_surv_ref(mapping, surv_path) {
-            for symbol in found {
-                let impl_path_matches = symbol
-                    .impl_path
+    if let Some(entry) = mapping_entry(mapping, exp) {
+        for symbol in found {
+            let impl_path_matches = symbol
+                .impl_path
+                .as_deref()
+                .map(|path| path == entry.impl_path)
+                .unwrap_or(false);
+            let file_and_name_match = symbol.name == entry.symbol_name
+                && symbol
+                    .relative_path
                     .as_deref()
-                    .map(|path| path == entry.impl_path)
+                    .map(|file| file == entry.source_file)
                     .unwrap_or(false);
-                let file_and_name_match = symbol.name == entry.symbol_name
-                    && symbol
-                        .relative_path
-                        .as_deref()
-                        .map(|file| file == entry.source_file)
-                        .unwrap_or(false);
-                if symbol_kind_matches(symbol, exp) && (impl_path_matches || file_and_name_match) {
-                    candidates.push(symbol);
-                }
+            if symbol_kind_matches(symbol, exp) && (impl_path_matches || file_and_name_match) {
+                candidates.push(symbol);
             }
-            return candidates;
         }
+        return candidates;
     }
 
     if let Some(symbols) = found_map.get(search_name) {
@@ -481,7 +855,9 @@ fn segments_contain(haystack: &[&str], needle: &[&str]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
     }
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn symbol_matches_expected_path(symbol: &FoundSymbol, expected_path: &str) -> bool {
@@ -573,7 +949,10 @@ fn compare_signature(exp: &ExpectedSymbol, found: &FoundSymbol) -> Option<Signat
 }
 
 fn compare_schema_fields(exp: &ExpectedSymbol, found: &FoundSymbol) -> Option<SchemaFieldMismatch> {
-    if exp.kind != SymbolKind::Schema || exp.fields.is_empty() || found.fields.is_empty() {
+    if exp.kind != SymbolKind::Schema
+        || exp.fields.is_empty()
+        || (!found.fields_known && found.fields.is_empty())
+    {
         return None;
     }
 
@@ -584,7 +963,7 @@ fn compare_schema_fields(exp: &ExpectedSymbol, found: &FoundSymbol) -> Option<Sc
             Some(actual_type) => {
                 let expected = normalize_type_name(expected_type, None);
                 let actual = normalize_type_name(actual_type, None);
-                if !actual.contains(&expected) && !expected.contains(&actual) {
+                if !type_names_compatible(&expected, &actual) {
                     problems.push(format!(
                         "field '{}' type mismatch: IR '{}' vs implementation '{}'",
                         name, expected_type, actual_type
@@ -713,19 +1092,23 @@ fn normalize_type_name(value: &str, owner: Option<&str>) -> String {
         return builtin.to_string();
     }
 
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-        .collect::<String>()
-        .to_ascii_lowercase()
+    normalize_identifier(value)
 }
 
 fn normalize_type_name_scalar(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-        .collect::<String>()
-        .to_ascii_lowercase()
+    normalize_identifier(value)
+}
+
+fn normalize_identifier(value: &str) -> String {
+    let mut normalized = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            normalized.push(ch.to_ascii_lowercase());
+        } else if !normalized.is_empty() && !normalized.ends_with('_') {
+            normalized.push('_');
+        }
+    }
+    normalized.trim_matches('_').to_string()
 }
 
 fn builtin_scalar_name(value: &str) -> Option<&'static str> {
@@ -744,7 +1127,21 @@ fn builtin_scalar_name(value: &str) -> Option<&'static str> {
 }
 
 fn type_mentions_schema(actual: &str, expected_schema: &str) -> bool {
-    !expected_schema.is_empty() && actual.contains(expected_schema)
+    if expected_schema.is_empty() {
+        return false;
+    }
+    let haystack = format!("_{actual}_");
+    let needle = format!("_{expected_schema}_");
+    haystack.contains(&needle)
+}
+
+fn type_names_compatible(left: &str, right: &str) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return left == right;
+    }
+    let left = format!("_{left}_");
+    let right = format!("_{right}_");
+    left.contains(&right) || right.contains(&left)
 }
 
 #[cfg(test)]
@@ -800,6 +1197,7 @@ mod tests {
                 return_type: return_type.map(str::to_string),
             }),
             fields: Default::default(),
+            fields_known: false,
         }
     }
 
@@ -843,6 +1241,7 @@ mod tests {
             is_method: false,
             detail: None,
             signature: None,
+            fields_known: true,
             fields: fields
                 .into_iter()
                 .map(|(name, type_name)| (name.to_string(), type_name.to_string()))

@@ -2,6 +2,9 @@
 name = "survibe-parser-rs"
 version = "0.1.0"
 edition = "2021"
+description = "Compiler and toolchain for Surv IR architecture specifications"
+repository = "https://github.com/otaku46/Surv-IR"
+readme = "README.md"
 
 [[bin]]
 name = "surc"
@@ -11,6 +14,7 @@ path = "src/main.rs"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+toml_edit = "0.22"
 walkdir = "2.5"
 chrono = "0.4"
 regex = "1.10"

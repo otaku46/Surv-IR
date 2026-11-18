@@ -1,5 +1,4 @@
 use crate::deploy::ast::DeployFile;
-use std::collections::HashMap;
 
 pub struct GitHubActionsGenerator;
 
@@ -14,9 +13,12 @@ impl GitHubActionsGenerator {
         // Header
         output.push_str("# Generated from Deploy IR by surc\n");
         if let Some(pipeline) = &deploy.pipeline {
-            output.push_str(&format!("# Pipeline: {}\n", pipeline.name));
-            if !pipeline.description.is_empty() {
-                output.push_str(&format!("# {}\n", pipeline.description));
+            output.push_str(&format!(
+                "# Pipeline: {}\n",
+                pipeline.name.replace('\n', " ")
+            ));
+            for line in pipeline.description.lines() {
+                output.push_str(&format!("# {line}\n"));
             }
         }
         output.push_str("\n");
@@ -71,7 +73,7 @@ impl GitHubActionsGenerator {
                     .strip_prefix("target.")
                     .unwrap_or(&job.uses_target);
                 if let Some(target) = deploy.targets.get(target_name) {
-                    output.push_str(&format!("    environment: {}\n", target.kind));
+                    output.push_str(&format!("    environment: {}\n", yaml_string(&target.kind)));
                 }
             }
 
@@ -101,20 +103,22 @@ impl GitHubActionsGenerator {
             for (i, cmd) in job.runs.iter().enumerate() {
                 output.push_str(&format!(
                     "      - name: {}\n",
-                    Self::generate_step_name(cmd, i)
+                    yaml_string(&Self::generate_step_name(cmd, i))
                 ));
-                output.push_str("        run: |\n");
-                output.push_str(&format!("          {}\n", cmd));
+                output.push_str("        run: |2-\n");
+                for line in cmd.split('\n') {
+                    output.push_str(&format!("          {line}\n"));
+                }
 
                 // Add environment variables for secrets
                 if !job.needs_secrets.is_empty() {
                     output.push_str("        env:\n");
                     for secret in &job.needs_secrets {
-                        let secret_name = secret.strip_prefix("secret.").unwrap_or(secret);
+                        let secret_name =
+                            sanitize_env_name(secret.strip_prefix("secret.").unwrap_or(secret));
                         output.push_str(&format!(
                             "          {}: ${{{{ secrets.{} }}}}\n",
-                            secret_name.to_uppercase(),
-                            secret_name.to_uppercase()
+                            secret_name, secret_name
                         ));
                     }
                 }
@@ -138,19 +142,6 @@ impl GitHubActionsGenerator {
         }
 
         output
-    }
-
-    fn build_job_graph(&self, deploy: &DeployFile) -> HashMap<String, Vec<String>> {
-        let mut graph = HashMap::new();
-        for (job_name, job) in &deploy.jobs {
-            let deps: Vec<String> = job
-                .requires
-                .iter()
-                .map(|r| r.strip_prefix("job.").unwrap_or(r).to_string())
-                .collect();
-            graph.insert(job_name.clone(), deps);
-        }
-        graph
     }
 
     fn sanitize_job_name(name: &str) -> String {
@@ -179,6 +170,27 @@ impl Default for GitHubActionsGenerator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn yaml_string(value: &str) -> String {
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    )
+}
+
+fn sanitize_env_name(name: &str) -> String {
+    let mut name = name.to_uppercase().replace('-', "_").replace('.', "_");
+    if name.is_empty() {
+        name.push_str("SECRET");
+    }
+    if name.starts_with(|ch: char| ch.is_ascii_digit()) {
+        name.insert_str(0, "SECRET_");
+    }
+    name
 }
 
 #[cfg(test)]

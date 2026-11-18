@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead};
+use std::ops::Range;
 
 pub type TomlTable = BTreeMap<String, TomlValue>;
 
@@ -57,7 +58,14 @@ pub fn parse_toml(mut reader: impl BufRead) -> io::Result<TomlTable> {
     Ok(parser.result)
 }
 
-fn convert_std_toml_table(table: toml::Table) -> TomlTable {
+/// Locate explicit status tables in files that use legacy Surv IR syntax.
+#[doc(hidden)]
+pub fn legacy_status_ranges(content: &str) -> io::Result<Vec<Range<usize>>> {
+    let mut parser = TomlParser::new();
+    parser.parse_str(content)
+}
+
+pub(crate) fn convert_std_toml_table(table: toml::Table) -> TomlTable {
     let mut result = TomlTable::new();
     for (key, value) in table {
         let converted = convert_std_toml_value(value);
@@ -90,6 +98,7 @@ fn convert_std_toml_value(value: toml::Value) -> TomlValue {
 struct TomlParser {
     result: TomlTable,
     current_table: Vec<String>,
+    explicit_tables: HashSet<String>,
 }
 
 impl TomlParser {
@@ -97,46 +106,53 @@ impl TomlParser {
         Self {
             result: TomlTable::new(),
             current_table: Vec::new(),
+            explicit_tables: HashSet::new(),
         }
     }
 
-    fn parse_str(&mut self, content: &str) -> io::Result<()> {
+    fn parse_str(&mut self, content: &str) -> io::Result<Vec<Range<usize>>> {
         let mut multiline_key = String::new();
         let mut multiline_value = String::new();
-        let mut in_multiline = false;
+        let mut delimiter: Option<&str> = None;
         let mut bracket_key = String::new();
         let mut bracket_value = String::new();
-        let mut bracket_depth = 0i32;
+        let mut brackets = Vec::new();
+        let mut bracket_quote: Option<char> = None;
+        let mut status_ranges = Vec::new();
+        let mut status_start = None;
+        let mut offset = 0;
 
-        for line in content.lines() {
-            if in_multiline {
-                if let Some(idx) = line.find(r#"""""#) {
-                    multiline_value.push_str(&line[..idx]);
-                    self.set_value(&multiline_key, TomlValue::String(multiline_value.clone()));
-                    in_multiline = false;
-                    multiline_key.clear();
-                    multiline_value.clear();
-                } else {
-                    multiline_value.push_str(line);
-                    multiline_value.push('\n');
+        for line in content.split_inclusive('\n') {
+            let line_start = offset;
+            offset += line.len();
+            let line = line.trim_end_matches(['\r', '\n']);
+            if let Some(end) = delimiter {
+                multiline_value.push('\n');
+                multiline_value.push_str(line);
+                if line.contains(end) {
+                    if let Some(value) = parse_toml_string(&multiline_value) {
+                        self.set_value(&multiline_key, value)?;
+                        delimiter = None;
+                        multiline_value.clear();
+                    }
                 }
                 continue;
             }
 
-            if bracket_depth > 0 {
+            if !brackets.is_empty() {
                 let cleaned = strip_inline_comment(line).trim();
                 if !cleaned.is_empty() {
                     if !bracket_value.is_empty() {
                         bracket_value.push(' ');
                     }
                     bracket_value.push_str(cleaned);
-                    bracket_depth += net_bracket_delta(cleaned);
-                    if bracket_depth <= 0 {
+                    scan_value(cleaned, &mut brackets, &mut bracket_quote, &bracket_key)?;
+                    if brackets.is_empty() {
                         let parsed = self.parse_value(&bracket_value);
-                        self.set_value(&bracket_key, parsed);
+                        self.set_value(&bracket_key, parsed)?;
                         bracket_key.clear();
                         bracket_value.clear();
-                        bracket_depth = 0;
+                        bracket_quote = None;
                     }
                 }
                 continue;
@@ -150,83 +166,140 @@ impl TomlParser {
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 let table_name = &trimmed[1..trimmed.len() - 1];
                 self.current_table = split_table_path(table_name);
-                self.ensure_table();
+                if self
+                    .current_table
+                    .first()
+                    .is_some_and(|item| item == "status")
+                {
+                    status_start.get_or_insert(line_start);
+                } else if let Some(start) = status_start.take() {
+                    status_ranges.push(start..line_start);
+                }
+                let table_path = self.current_table.join("\u{1f}");
+                if !self.explicit_tables.insert(table_path) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("duplicate table [{}]", table_name),
+                    ));
+                }
+                self.ensure_table()?;
                 continue;
             }
 
             if let Some(idx) = trimmed.find('=') {
                 let key = trimmed[..idx].trim();
-                let raw_after_eq = line[line.find('=').unwrap() + 1..].trim();
-
-                if raw_after_eq.starts_with(r#"""""#) {
-                    multiline_key = key.to_string();
-                    let rest = &raw_after_eq[3..];
-                    if let Some(end_idx) = rest.find(r#"""""#) {
-                        let segment = &rest[..end_idx];
-                        self.set_value(key, TomlValue::String(segment.to_string()));
+                let raw_after_eq = trimmed[idx + 1..].trim_start();
+                if let Some(start) = ["\"\"\"", "'''"]
+                    .into_iter()
+                    .find(|delimiter| raw_after_eq.starts_with(delimiter))
+                {
+                    let raw_after_eq = line[line.find('=').unwrap() + 1..].trim_start();
+                    if let Some(value) = parse_toml_string(raw_after_eq) {
+                        self.set_value(key, value)?;
                     } else {
-                        in_multiline = true;
-                        multiline_value.push_str(rest);
-                        multiline_value.push('\n');
+                        multiline_key = key.to_string();
+                        multiline_value.push_str(raw_after_eq);
+                        delimiter = Some(start);
                     }
                     continue;
                 }
 
                 let value = trimmed[idx + 1..].trim().to_string();
-                let delta = net_bracket_delta(&value);
-                if (value.starts_with('[') || value.starts_with('{')) && delta > 0 {
+                scan_value(&value, &mut brackets, &mut bracket_quote, key)?;
+                if !brackets.is_empty() {
                     bracket_key = key.to_string();
                     bracket_value = value;
-                    bracket_depth = delta;
                     continue;
                 }
+                bracket_quote = None;
 
                 let parsed = self.parse_value(&value);
-                self.set_value(key, parsed);
+                self.set_value(key, parsed)?;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected a table header or assignment at byte {line_start}"),
+                ));
             }
         }
 
-        if bracket_depth > 0 && !bracket_key.is_empty() {
-            let parsed = self.parse_value(&bracket_value);
-            self.set_value(&bracket_key, parsed);
+        if delimiter.is_some() || !brackets.is_empty() {
+            let key = if delimiter.is_some() {
+                multiline_key
+            } else {
+                bracket_key
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unterminated value for {key}"),
+            ));
         }
 
+        if let Some(start) = status_start {
+            status_ranges.push(start..content.len());
+        }
+        Ok(status_ranges)
+    }
+
+    fn ensure_table(&mut self) -> io::Result<()> {
+        let mut current = &mut self.result;
+        for part in &self.current_table {
+            let entry = current
+                .entry(part.clone())
+                .or_insert_with(|| TomlValue::Table(TomlTable::new()));
+            if !matches!(entry, TomlValue::Table(_)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("key '{}' is both a value and a table", part),
+                ));
+            }
+            current = match entry {
+                TomlValue::Table(table) => table,
+                _ => unreachable!(),
+            };
+        }
         Ok(())
     }
 
-    fn ensure_table(&mut self) {
+    fn set_value(&mut self, key: &str, value: TomlValue) -> io::Result<()> {
+        let parts = split_key_path(key);
+        if parts.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "empty key in assignment",
+            ));
+        }
+
         let mut current = &mut self.result;
-        for part in &self.current_table {
+        for part in self
+            .current_table
+            .iter()
+            .chain(parts.iter().take(parts.len() - 1))
+        {
             let entry = current
                 .entry(part.clone())
                 .or_insert_with(|| TomlValue::Table(TomlTable::new()));
             if !matches!(entry, TomlValue::Table(_)) {
-                *entry = TomlValue::Table(TomlTable::new());
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("key '{}' is both a value and a table", part),
+                ));
             }
             current = match entry {
                 TomlValue::Table(table) => table,
                 _ => unreachable!(),
             };
         }
-    }
 
-    fn set_value(&mut self, key: &str, value: TomlValue) {
-        let mut current = &mut self.result;
-
-        for part in &self.current_table {
-            let entry = current
-                .entry(part.clone())
-                .or_insert_with(|| TomlValue::Table(TomlTable::new()));
-            if !matches!(entry, TomlValue::Table(_)) {
-                *entry = TomlValue::Table(TomlTable::new());
-            }
-            current = match entry {
-                TomlValue::Table(table) => table,
-                _ => unreachable!(),
-            };
+        let leaf = parts.last().expect("non-empty key path");
+        if current.contains_key(leaf) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("duplicate key '{}'", parts.join(".")),
+            ));
         }
-
-        current.insert(key.to_string(), value);
+        current.insert(leaf.clone(), value);
+        Ok(())
     }
 
     fn parse_value(&self, s: &str) -> TomlValue {
@@ -234,7 +307,8 @@ impl TomlParser {
 
         if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
             let content = &trimmed[1..trimmed.len() - 1];
-            return TomlValue::String(unquote_string(content));
+            return parse_toml_string(trimmed)
+                .unwrap_or_else(|| TomlValue::String(unquote_string(content)));
         }
 
         if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
@@ -334,38 +408,60 @@ fn strip_inline_comment(line: &str) -> &str {
     line
 }
 
-fn net_bracket_delta(s: &str) -> i32 {
-    let mut depth = 0i32;
-    let mut in_double = false;
-    let mut in_single = false;
-    let mut escaped = false;
-
-    for ch in s.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && in_double {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' && !in_single {
-            in_double = !in_double;
-        } else if ch == '\'' && !in_double {
-            in_single = !in_single;
-        } else if !in_double && !in_single {
-            match ch {
-                '[' | '{' => depth += 1,
-                ']' | '}' => depth -= 1,
-                _ => {}
+fn scan_value(
+    s: &str,
+    brackets: &mut Vec<char>,
+    quote: &mut Option<char>,
+    key: &str,
+) -> io::Result<()> {
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        match *quote {
+            Some('"') if ch == '\\' => {
+                chars.next();
             }
+            Some(open) if ch == open => *quote = None,
+            Some(_) => {}
+            None => match ch {
+                '"' | '\'' => *quote = Some(ch),
+                '[' => brackets.push(']'),
+                '{' => brackets.push('}'),
+                ']' | '}' if brackets.pop() != Some(ch) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unmatched {ch} in {key}"),
+                    ));
+                }
+                _ => {}
+            },
         }
     }
-    depth
+    if quote.is_some() && brackets.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unterminated string in {key}"),
+        ));
+    }
+    Ok(())
 }
 
 fn split_table_path(table_name: &str) -> Vec<String> {
     split_respecting_brackets(table_name, '.')
+        .into_iter()
+        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn split_key_path(key: &str) -> Vec<String> {
+    let trimmed = key.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        return vec![trimmed.trim_matches('"').trim_matches('\'').to_string()];
+    }
+    split_respecting_brackets(trimmed, '.')
         .into_iter()
         .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
         .filter(|s| !s.is_empty())
@@ -409,6 +505,14 @@ fn split_respecting_brackets(s: &str, sep: char) -> Vec<String> {
     result
 }
 
+fn parse_toml_string(raw: &str) -> Option<TomlValue> {
+    let mut table = toml::from_str::<toml::Table>(&format!("value = {raw}")).ok()?;
+    match table.remove("value")? {
+        toml::Value::String(value) => Some(TomlValue::String(value)),
+        _ => None,
+    }
+}
+
 fn unquote_string(mut s: &str) -> String {
     let mut result = String::new();
     while let Some(idx) = s.find('\\') {
@@ -428,7 +532,7 @@ fn unquote_string(mut s: &str) -> String {
                 result.push(other);
             }
         }
-        s = &s[1..];
+        s = &s[escaped.len_utf8()..];
     }
     result.push_str(s);
     result
@@ -466,9 +570,7 @@ runs = [
 impl.lang = "ts" # Only in TypeScript
 "#;
         let table = parse_toml(Cursor::new(input)).expect("parse");
-        let build = table["deploy"]
-            .as_table()
-            .unwrap()["job"]
+        let build = table["deploy"].as_table().unwrap()["job"]
             .as_table()
             .unwrap()["build"]
             .as_table()
@@ -481,14 +583,35 @@ impl.lang = "ts" # Only in TypeScript
     }
 
     #[test]
-    fn fallback_handles_table_scalar_collision_without_panic() {
+    fn fallback_parses_multiline_strings_inside_arrays() {
+        let input = r#"
+[deploy.job.build]
+runs = ["""line1
+  line2""", "next"]
+legacy = bare
+"#;
+        let table = parse_toml(Cursor::new(input)).expect("fallback parse");
+        let build = table["deploy"].as_table().unwrap()["job"]
+            .as_table()
+            .unwrap()["build"]
+            .as_table()
+            .unwrap();
+        let runs = build["runs"].as_array().expect("runs array");
+        assert_eq!(runs.len(), 2);
+        let first = runs[0].as_str().expect("multiline string");
+        assert!(first.contains("line1"), "{first}");
+        assert!(first.contains("line2"), "{first}");
+        assert_eq!(runs[1].as_str(), Some("next"));
+    }
+
+    #[test]
+    fn fallback_rejects_table_scalar_collision() {
         let input = r#"
 foo = "scalar"
 [foo.bar]
 items = { "a", "b" }
 "#;
-        let table = parse_toml(Cursor::new(input)).expect("fallback parse");
-        let bar = table["foo"].as_table().unwrap()["bar"].as_table().unwrap();
-        assert_eq!(bar["items"].as_str(), Some(r#"{ "a", "b" }"#));
+        let err = parse_toml(Cursor::new(input)).expect_err("collision must be rejected");
+        assert!(err.to_string().contains("both a value and a table"));
     }
 }

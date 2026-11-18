@@ -1,5 +1,5 @@
 use crate::deploy::ast::DeployFile;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct GitLabCIGenerator;
 
@@ -85,19 +85,23 @@ impl GitLabCIGenerator {
             if !job.needs_secrets.is_empty() {
                 output.push_str("  variables:\n");
                 for secret in &job.needs_secrets {
-                    let secret_name = secret.strip_prefix("secret.").unwrap_or(secret);
-                    output.push_str(&format!(
-                        "    {}: ${}\n",
-                        secret_name.to_uppercase(),
-                        secret_name.to_uppercase()
-                    ));
+                    let secret_name =
+                        Self::sanitize_env_name(secret.strip_prefix("secret.").unwrap_or(secret));
+                    output.push_str(&format!("    {}: ${}\n", secret_name, secret_name));
                 }
             }
 
-            // Script
+            // Script. Block scalars keep colons, quotes, comments and newlines
+            // literal instead of turning them into YAML structure.
             output.push_str("  script:\n");
             for cmd in &job.runs {
-                output.push_str(&format!("    - {}\n", cmd));
+                output.push_str("    - |\n");
+                if cmd.is_empty() {
+                    output.push_str("      \n");
+                }
+                for line in cmd.lines() {
+                    output.push_str(&format!("      {line}\n"));
+                }
             }
 
             // Add manual approval for production
@@ -144,59 +148,85 @@ impl GitLabCIGenerator {
     }
 
     fn determine_stages(&self, deploy: &DeployFile) -> Vec<String> {
-        let mut stages = Vec::new();
-        let has_build = deploy.jobs.iter().any(|(name, _)| name.contains("build"));
-        let has_test = deploy.jobs.iter().any(|(name, _)| name.contains("test"));
-        let has_deploy = deploy.jobs.iter().any(|(name, _)| {
-            name.contains("deploy") || !deploy.jobs.get(name).unwrap().uses_target.is_empty()
-        });
-
-        if has_build {
-            stages.push("build".to_string());
-        }
-        if has_test {
-            stages.push("test".to_string());
-        }
-        if has_deploy {
-            stages.push("deploy".to_string());
-        }
-
-        if stages.is_empty() {
-            stages.push("build".to_string());
-        }
-
-        stages
+        let depths = job_depths(deploy);
+        let max_depth = depths.values().copied().max().unwrap_or(0);
+        (0..=max_depth).map(stage_name).collect()
     }
 
     fn assign_job_stages(&self, deploy: &DeployFile) -> HashMap<String, String> {
-        let mut stages = HashMap::new();
-
-        for (job_name, job) in &deploy.jobs {
-            let stage = if job_name.contains("build") {
-                "build"
-            } else if job_name.contains("test") {
-                "test"
-            } else if !job.uses_target.is_empty() || job_name.contains("deploy") {
-                "deploy"
-            } else if job.requires.is_empty() {
-                "build"
-            } else {
-                "deploy"
-            };
-            stages.insert(job_name.clone(), stage.to_string());
-        }
-
-        stages
+        job_depths(deploy)
+            .into_iter()
+            .map(|(job, depth)| (job, stage_name(depth)))
+            .collect()
     }
 
     fn sanitize_job_name(name: &str) -> String {
         name.replace('-', "_").replace('.', "_")
+    }
+
+    fn sanitize_env_name(name: &str) -> String {
+        let mut name = name.to_uppercase().replace('-', "_").replace('.', "_");
+        if name.is_empty() {
+            name.push_str("SECRET");
+        }
+        if name.starts_with(|ch: char| ch.is_ascii_digit()) {
+            name.insert_str(0, "SECRET_");
+        }
+        name
     }
 }
 
 impl Default for GitLabCIGenerator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn job_depths(deploy: &DeployFile) -> HashMap<String, usize> {
+    let mut memo = HashMap::new();
+    let mut visiting = HashSet::new();
+    for name in deploy.jobs.keys() {
+        depth_of(name, deploy, &mut memo, &mut visiting);
+    }
+    memo
+}
+
+fn depth_of(
+    name: &str,
+    deploy: &DeployFile,
+    memo: &mut HashMap<String, usize>,
+    visiting: &mut HashSet<String>,
+) -> usize {
+    if let Some(depth) = memo.get(name) {
+        return *depth;
+    }
+    if !visiting.insert(name.to_string()) {
+        return 0;
+    }
+    let depth = deploy
+        .jobs
+        .get(name)
+        .map(|job| {
+            job.requires
+                .iter()
+                .map(|requirement| requirement.strip_prefix("job.").unwrap_or(requirement))
+                .filter(|dependency| deploy.jobs.contains_key(*dependency))
+                .map(|dependency| 1 + depth_of(dependency, deploy, memo, visiting))
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    visiting.remove(name);
+    memo.insert(name.to_string(), depth);
+    depth
+}
+
+fn stage_name(depth: usize) -> String {
+    match depth {
+        0 => "build".to_string(),
+        1 => "test".to_string(),
+        2 => "deploy".to_string(),
+        depth => format!("deploy_{depth}"),
     }
 }
 

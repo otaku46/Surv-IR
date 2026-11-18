@@ -6,11 +6,12 @@ use std::path::Path;
 
 use survibe_parser_rs::codegen::{GitHubActionsGenerator, GitLabCIGenerator};
 use survibe_parser_rs::{
-    check_deploy_file, check_project, check_surv_file, load_manifest, load_project,
-    parse_deploy_file, parse_surv_file, Diagnostic, HtmlExporter, MermaidExporter, ProjectAST,
-    Section,
+    check_deploy_file, check_project_manifest, check_surv_file, load_ir_context, load_manifest,
+    load_project_context, parse_deploy_file, parse_surv_file, Diagnostic, HtmlExporter,
+    MermaidExporter, ProjectContext, Section, SymbolKind,
 };
 
+mod behavior_commands;
 mod deps_commands;
 mod query_commands;
 mod status_commands;
@@ -39,6 +40,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         "check" => run_unified_check(&args[2..]),
+        "verify" => {
+            let code = behavior_commands::run_verify(&args[2..])?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         // Legacy aliases kept for backward compatibility
         "project-check" => {
             if args.len() < 3 {
@@ -76,6 +84,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             run_deps(&args[2..])
         }
+        "plan" => {
+            if !survibe_parser_rs::plan::run_plan(&args[2..])? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         "diff" | "diff-impl" => run_diff_impl(&args[2..]),
         "skeleton" | "init-ir" => run_skeleton(&args[1], &args[2..]),
         "export" => {
@@ -88,7 +102,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "codegen" => {
             if args.len() < 3 {
                 eprintln!("Usage: surc codegen <platform> <deploy.toml>");
-                eprintln!("Platforms: github-actions, gitlab-ci");
+                eprintln!("Platforms: github-actions, gitlab-ci, tla+");
                 std::process::exit(1);
             }
             run_codegen(&args[2..])
@@ -112,11 +126,19 @@ fn print_usage() {
     eprintln!("Usage: surc <command> [options]");
     eprintln!();
     eprintln!("Core Commands:");
-    eprintln!("  check <path> [--ast]        Validate Surv IR file, project (surv.toml), or Deploy IR");
+    eprintln!(
+        "  check <path> [--ast]        Validate Surv IR file, project (surv.toml), or Deploy IR"
+    );
     eprintln!("  inspect [target] <path>     Inspect a module or project overview");
-    eprintln!("  slice <target> <path>       Extract minimal IR fragment for a target (--with-defs)");
+    eprintln!(
+        "  slice <target> <path>       Extract minimal IR fragment for a target (--with-defs)"
+    );
     eprintln!("  refs <target> <path>        List references to a symbol across IR");
     eprintln!("  trace <target> <path>       Trace upstream/downstream pipeline & module flow");
+    eprintln!("  verify <behavior|surv.toml> Check reachable states and report counterexamples");
+    eprintln!(
+        "  plan <ir> [workspace]      Derive implementation waves, blockers, and parallel tracks"
+    );
     eprintln!("  diff <ir> <workspace>       Detect drift between IR and implementation (alias: diff-impl)");
     eprintln!("  skeleton <mode> <target>    Generate IR skeleton from code or code stubs from IR (alias: init-ir)");
     eprintln!("  export <type> <path>        Export Mermaid diagrams or interactive HTML");
@@ -180,14 +202,10 @@ fn detect_ir_kind(path: &Path) -> Result<IrKind, Box<dyn Error>> {
     Ok(IrKind::SurvFile)
 }
 
-fn load_project_or_single(path: &Path) -> Result<ProjectAST, Box<dyn Error>> {
+fn load_project_or_single(path: &Path) -> Result<ProjectContext, Box<dyn Error>> {
     match detect_ir_kind(path)? {
-        IrKind::Manifest => load_project(path),
-        IrKind::SurvFile => {
-            let file = File::open(path)?;
-            let ast = parse_surv_file(file)?;
-            Ok(ProjectAST::from_files(vec![(path.to_path_buf(), ast)]))
-        }
+        IrKind::Manifest => load_project_context(path),
+        IrKind::SurvFile => load_ir_context(path),
         IrKind::Deploy => Err(format!(
             "'{}' is a Deploy IR file; expected a Surv IR file or surv.toml manifest",
             path.display()
@@ -196,17 +214,66 @@ fn load_project_or_single(path: &Path) -> Result<ProjectAST, Box<dyn Error>> {
     }
 }
 
+fn resolve_module<'a>(
+    context: &'a ProjectContext,
+    target: &str,
+) -> Result<&'a survibe_parser_rs::ast::ModSection, Box<dyn Error>> {
+    let raw = target.strip_prefix("mod.").unwrap_or(target);
+    let matches: Vec<_> = context
+        .symbols
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == SymbolKind::Mod)
+        .filter(|entry| {
+            entry.local_name == raw
+                || entry.fq_name == target
+                || format!("mod.{}", entry.local_name) == target
+                || format!("{}.mod.{}", entry.package, entry.local_name) == target
+                || entry.namespace.as_ref().is_some_and(|namespace| {
+                    format!("{namespace}.mod.{}", entry.local_name) == target
+                })
+        })
+        .collect();
+    let entry = match matches.as_slice() {
+        [entry] => *entry,
+        [] => return Err(format!("Module 'mod.{raw}' not found").into()),
+        _ => {
+            let candidates = matches
+                .iter()
+                .map(|entry| entry.fq_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("Ambiguous module 'mod.{raw}'; candidates: {candidates}").into());
+        }
+    };
+    for (path, file) in &context.project.files {
+        if path != &entry.file {
+            continue;
+        }
+        for section in &file.sections {
+            if let Section::Mod(module) = section {
+                if module.name == entry.local_name {
+                    return Ok(module);
+                }
+            }
+        }
+    }
+    Err(format!("Module 'mod.{raw}' has no section").into())
+}
+
 fn run_unified_check(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("Usage: surc check <file.toml|surv.toml|deploy.toml> [--ast]");
+        eprintln!("Usage: surc check <file.toml|surv.toml|deploy.toml|file.behavior.toml> [--ast]");
         eprintln!();
         eprintln!("Automatically detects and validates:");
         eprintln!("  - Single Surv IR design files (*.toml)");
         eprintln!("  - Multi-package project manifests (surv.toml)");
         eprintln!("  - Deploy IR pipeline files ([deploy.*])");
+        eprintln!("  - Behavior IR files (*.behavior.toml or [meta] ir = \"surv-behavior\")");
         eprintln!();
         eprintln!("Options:");
-        eprintln!("  --ast, --dump-ast   Output parsed AST as JSON instead of diagnostics");
+        eprintln!("  --ast, --dump-ast   Output AST as JSON instead of diagnostics");
+        eprintln!("  --manifest <path>  Use this project when checking a Behavior file");
         if args.is_empty() {
             std::process::exit(1);
         }
@@ -214,10 +281,34 @@ fn run_unified_check(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 
     let dump_ast = args.iter().any(|a| a == "--ast" || a == "--dump-ast");
-    let target = args
-        .iter()
-        .find(|a| !a.starts_with('-'))
-        .ok_or("Missing file path for 'surc check'")?;
+    let mut target = None;
+    let mut manifest = None;
+    let mut flags = args.iter();
+    while let Some(arg) = flags.next() {
+        match arg.as_str() {
+            "--manifest" => {
+                manifest = Some(Path::new(
+                    flags
+                        .next()
+                        .filter(|arg| !arg.starts_with('-'))
+                        .ok_or("--manifest requires a path")?,
+                ));
+            }
+            "--ast" | "--dump-ast" => {}
+            other if other.starts_with('-') => {
+                return Err(format!("Unknown option for 'surc check': {other}").into());
+            }
+            other => {
+                if target.is_none() {
+                    target = Some(other);
+                }
+            }
+        }
+    }
+    let target = target.ok_or("Missing file path for 'surc check'")?;
+    if survibe_parser_rs::behavior::looks_like_behavior(Path::new(target)) {
+        return behavior_commands::run_behavior_check(Path::new(target), manifest, dump_ast);
+    }
 
     if dump_ast {
         return run_parse(target);
@@ -255,8 +346,17 @@ fn print_diagnostics(
 
     let mut error_count = 0;
     let mut warning_count = 0;
+    let mut seen = std::collections::BTreeSet::new();
 
     for diag in diags {
+        if !seen.insert((
+            diag.severity.as_str(),
+            diag.kind.as_str(),
+            diag.message.as_str(),
+            diag.location.as_str(),
+        )) {
+            continue;
+        }
         let icon = match diag.severity.as_str() {
             "error" => {
                 error_count += 1;
@@ -294,8 +394,11 @@ fn run_check(filename: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_project_check(manifest: &str) -> Result<(), Box<dyn Error>> {
-    let project = load_project(Path::new(manifest))?;
-    let diags = check_project(&project);
+    let path = Path::new(manifest);
+    let mut diags = check_project_manifest(path)?;
+    if !diags.iter().any(|diag| diag.severity == "error") {
+        diags.extend(behavior_commands::project_diagnostics(path));
+    }
     print_diagnostics(&diags, "No project issues found", "project diagnostics")
 }
 
@@ -328,10 +431,7 @@ fn resolve_file_and_module_args(args: &[String]) -> Result<(String, String), Box
     }
 
     if let Some(module) = mod_flag {
-        let file = positionals
-            .into_iter()
-            .next()
-            .ok_or("Missing file path")?;
+        let file = positionals.into_iter().next().ok_or("Missing file path")?;
         return Ok((file, module));
     }
 
@@ -372,23 +472,13 @@ fn run_export(args: &[String]) -> Result<(), Box<dyn Error>> {
                 eprintln!("Usage: surc export {} <path> <module-name>", export_type);
                 std::process::exit(1);
             };
-            let module_name = raw_mod.strip_prefix("mod.").unwrap_or(&raw_mod);
-            let project = load_project_or_single(Path::new(&file_path))?;
-
-            let module = project
-                .files
-                .iter()
-                .flat_map(|(_, f)| &f.sections)
-                .find_map(|s| match s {
-                    Section::Mod(m) if m.name == module_name => Some(m),
-                    _ => None,
-                })
-                .ok_or_else(|| format!("Module 'mod.{}' not found in '{}'", module_name, file_path))?;
+            let context = load_project_or_single(Path::new(&file_path))?;
+            let module = resolve_module(&context, &raw_mod)?;
 
             let output = if export_type == "pipeline" {
-                exporter.export_pipeline(module, &project)
+                exporter.export_pipeline(module, &context.project)
             } else {
-                exporter.export_module_detail(module, &project)
+                exporter.export_module_detail(module, &context.project)
             };
             println!("{}", output);
         }
@@ -397,8 +487,8 @@ fn run_export(args: &[String]) -> Result<(), Box<dyn Error>> {
                 eprintln!("Usage: surc export modules <surv.toml|file.toml>");
                 std::process::exit(1);
             }
-            let project = load_project_or_single(Path::new(&args[1]))?;
-            let output = exporter.export_module_dependencies(&project);
+            let context = load_project_or_single(Path::new(&args[1]))?;
+            let output = exporter.export_module_dependencies(&context.project);
             println!("{}", output);
         }
         "schemas" => {
@@ -406,8 +496,8 @@ fn run_export(args: &[String]) -> Result<(), Box<dyn Error>> {
                 eprintln!("Usage: surc export schemas <surv.toml|file.toml>");
                 std::process::exit(1);
             }
-            let project = load_project_or_single(Path::new(&args[1]))?;
-            let output = exporter.export_schema_graph(&project);
+            let context = load_project_or_single(Path::new(&args[1]))?;
+            let output = exporter.export_schema_graph(&context.project);
             println!("{}", output);
         }
         "html" => {
@@ -422,8 +512,8 @@ fn run_export(args: &[String]) -> Result<(), Box<dyn Error>> {
                 let deploy = parse_deploy_file(file)?;
                 println!("{}", html_exporter.export_deploy_interactive(&deploy));
             } else {
-                let project = load_project_or_single(path)?;
-                println!("{}", html_exporter.export_interactive(&project));
+                let context = load_project_or_single(path)?;
+                println!("{}", html_exporter.export_interactive(&context.project));
             }
         }
         "deploy-mermaid" | "mermaid" => {
@@ -457,6 +547,31 @@ fn run_export(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn ensure_deploy_valid(
+    deploy: &survibe_parser_rs::deploy::ast::DeployFile,
+) -> Result<(), Box<dyn Error>> {
+    let diagnostics = check_deploy_file(deploy);
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == "error")
+    {
+        for diagnostic in &diagnostics {
+            eprintln!(
+                "{} [{}] {}",
+                if diagnostic.severity == "error" {
+                    "✗"
+                } else {
+                    "⚠"
+                },
+                diagnostic.kind,
+                diagnostic.message
+            );
+        }
+        return Err("deploy IR reported errors".into());
+    }
+    Ok(())
+}
+
 fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
         eprintln!("Usage: surc codegen <platform> <deploy.toml>");
@@ -466,6 +581,7 @@ fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
     let platform = &args[0];
 
     match platform.as_str() {
+        "tla+" | "tla" => behavior_commands::run_tla_codegen(&args[1..])?,
         "github-actions" => {
             if args.len() < 2 {
                 eprintln!("Usage: surc codegen github-actions <deploy.toml>");
@@ -473,6 +589,7 @@ fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             let file = File::open(&args[1])?;
             let deploy = parse_deploy_file(file)?;
+            ensure_deploy_valid(&deploy)?;
             let generator = GitHubActionsGenerator::new();
             let yaml = generator.generate(&deploy);
             println!("{}", yaml);
@@ -484,13 +601,14 @@ fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             let file = File::open(&args[1])?;
             let deploy = parse_deploy_file(file)?;
+            ensure_deploy_valid(&deploy)?;
             let generator = GitLabCIGenerator::new();
             let yaml = generator.generate(&deploy);
             println!("{}", yaml);
         }
         other => {
             eprintln!("Unknown platform: {}", other);
-            eprintln!("Valid platforms: github-actions, gitlab-ci");
+            eprintln!("Valid platforms: github-actions, gitlab-ci, tla+");
             std::process::exit(1);
         }
     }
@@ -524,12 +642,12 @@ fn run_inspect_cmd(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_file_overview(filename: &str) -> Result<(), Box<dyn Error>> {
-    let project = load_project_or_single(Path::new(filename))?;
+    let context = load_project_or_single(Path::new(filename))?;
     let mut schemas = 0usize;
     let mut funcs = 0usize;
     let mut mods = Vec::new();
 
-    for (_, file) in &project.files {
+    for (_, file) in &context.project.files {
         for section in &file.sections {
             match section {
                 Section::Schema(_) => schemas += 1,
@@ -541,7 +659,12 @@ fn run_file_overview(filename: &str) -> Result<(), Box<dyn Error>> {
     }
 
     println!("File: {}", filename);
-    println!("Schemas: {}, Functions: {}, Modules: {}", schemas, funcs, mods.len());
+    println!(
+        "Schemas: {}, Functions: {}, Modules: {}",
+        schemas,
+        funcs,
+        mods.len()
+    );
     if !mods.is_empty() {
         println!();
         println!("Modules:");
@@ -553,47 +676,20 @@ fn run_file_overview(filename: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_inspect(module_name: &str, filename: &str) -> Result<(), Box<dyn Error>> {
-    let project = load_project_or_single(Path::new(filename))?;
-    let module_name = module_name.strip_prefix("mod.").unwrap_or(module_name);
+    let context = load_project_or_single(Path::new(filename))?;
+    let module = resolve_module(&context, module_name)?;
+    let module_name = module.name.as_str();
 
-    let mut found_mod = None;
-    let mut found_status = None;
-
-    for (_, parsed) in &project.files {
-        for section in &parsed.sections {
-            match section {
-                Section::Mod(m) if m.name == module_name => {
-                    found_mod = Some(m);
-                }
-                Section::Status(s) => {
-                    if s.modules.contains_key(module_name) {
-                        found_status = Some(s);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let module = match found_mod {
-        Some(m) => m,
-        None => {
-            eprintln!(
-                "Error: Module 'mod.{}' not found in {}",
-                module_name, filename
-            );
-            eprintln!();
-            eprintln!("Available modules:");
-            for (_, parsed) in &project.files {
-                for section in &parsed.sections {
-                    if let Section::Mod(m) = section {
-                        eprintln!("  - mod.{}", m.name);
-                    }
+    let found_status = context.project.files.iter().find_map(|(_, parsed)| {
+        parsed.sections.iter().find_map(|section| {
+            if let Section::Status(status) = section {
+                if status.modules.contains_key(module_name) {
+                    return Some(status);
                 }
             }
-            std::process::exit(1);
-        }
-    };
+            None
+        })
+    });
 
     println!("Module: mod.{}", module.name);
     println!();
@@ -652,6 +748,21 @@ fn run_inspect(module_name: &str, filename: &str) -> Result<(), Box<dyn Error>> 
         }
     }
 
+    let path = Path::new(filename);
+    if path.file_name().is_some_and(|name| name == "surv.toml") {
+        let references = survibe_parser_rs::behavior::reverse_references(
+            path,
+            &format!("mod.{module_name}"),
+            survibe_parser_rs::SymbolKind::Mod,
+        )?;
+        if !references.is_empty() {
+            println!("Behaviors:");
+            for reference in references {
+                println!("  - {} ({})", reference.name, reference.source.display());
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -664,12 +775,16 @@ fn print_skeleton_usage() {
     eprintln!("Generate Surv IR skeletons from source code (Code -> IR) or implementation stubs from IR (IR -> Code).");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --lang <lang>       Language filter (ts, rust, c, zig, both, all) [default: both]");
+    eprintln!(
+        "  --lang <lang>       Language filter (ts, rust, c, zig, both, all) [default: both]"
+    );
     eprintln!("  --exclude-tests     Exclude test-only symbols from design skeleton output");
     eprintln!("  --dedup <mode>      Deduplicate symbols by name, path, or none [default: path]");
     eprintln!("  --emit <items>      Comma-separated sections: schemas,funcs,mods,mapping");
     eprintln!("  --mod <module>      Filter to specific module (for 'skeleton code')");
-    eprintln!("  --ir <file.toml>    Only emit design skeleton for symbols not already in <file.toml>");
+    eprintln!(
+        "  --ir <file.toml>    Only emit design skeleton for symbols not already in <file.toml>"
+    );
     eprintln!("  --strategy <str>    Analysis strategy (static, lsp) [default: static]");
 }
 

@@ -6,6 +6,10 @@ kind = "node"
 role = "entity"
 fields = {token = "string", expires_at = "timestamp"}
 
+[schema.TokenValidation]
+kind = "node"
+fields = { valid = "bool" }
+
 [func.validateToken]
 intent = "Validate authentication token"
 input = ["schema.Token"]

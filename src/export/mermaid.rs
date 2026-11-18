@@ -89,7 +89,10 @@ impl MermaidExporter {
     /// Export a single module's pipeline as a Mermaid flowchart
     pub fn export_pipeline(&self, module: &ModSection, project: &ProjectAST) -> String {
         let mut output = String::from("---\n");
-        output.push_str(&format!("title: Pipeline - {}\n", module.name));
+        output.push_str(&format!(
+            "title: Pipeline - {}\n",
+            Self::escape_label(&module.name)
+        ));
         output.push_str("---\n");
         output.push_str("flowchart LR\n");
 
@@ -109,7 +112,11 @@ impl MermaidExporter {
         }
 
         // Generate nodes and edges
-        let pipeline_calls = module.get_pipeline_calls();
+        let pipeline_calls: Vec<String> = module
+            .get_pipeline_calls()
+            .into_iter()
+            .map(|call| local_func_ref(&call))
+            .collect();
         for (i, func_ref) in pipeline_calls.iter().enumerate() {
             let func_id = format!("f{}", i);
             let func_name = func_ref.strip_prefix("func.").unwrap_or(func_ref);
@@ -121,9 +128,18 @@ impl MermaidExporter {
                 } else {
                     format!("<br/><small>{}</small>", Self::escape_html(&func.intent))
                 };
-                output.push_str(&format!("    {}[\"{}{}\"]", func_id, func_name, intent));
+                output.push_str(&format!(
+                    "    {}[\"{}{}\"]",
+                    func_id,
+                    Self::escape_label(func_name),
+                    intent
+                ));
             } else {
-                output.push_str(&format!("    {}[\"{}⚠\"]", func_id, func_name));
+                output.push_str(&format!(
+                    "    {}[\"{}⚠\"]",
+                    func_id,
+                    Self::escape_label(func_name)
+                ));
             }
 
             // Add styling for undefined funcs
@@ -141,7 +157,17 @@ impl MermaidExporter {
                 let curr_func = funcs.get(func_ref);
 
                 if let (Some(prev), Some(curr)) = (prev_func, curr_func) {
-                    let common = Self::find_common_schemas(&prev.output, &curr.input);
+                    let prev_output: Vec<String> = prev
+                        .output
+                        .iter()
+                        .map(|reference| local_schema_ref(reference))
+                        .collect();
+                    let curr_input: Vec<String> = curr
+                        .input
+                        .iter()
+                        .map(|reference| local_schema_ref(reference))
+                        .collect();
+                    let common = Self::find_common_schemas(&prev_output, &curr_input);
                     if common.is_empty() {
                         output.push_str(&format!(
                             "    {} -.->|⚠ no common schema| {}\n",
@@ -150,7 +176,7 @@ impl MermaidExporter {
                     } else {
                         let label = common
                             .iter()
-                            .map(|s| s.strip_prefix("schema.").unwrap_or(s))
+                            .map(|s| Self::escape_label(s.strip_prefix("schema.").unwrap_or(s)))
                             .collect::<Vec<_>>()
                             .join(", ");
                         output.push_str(&format!("    {} -->|{}| {}\n", prev_id, label, func_id));
@@ -181,30 +207,32 @@ impl MermaidExporter {
 
         // Add all modules as nodes
         let mut defined_mods = HashSet::new();
-        for (mod_id, _mod_ref) in &project.mods {
+        for mod_id in project.mods.keys() {
             let mod_name = mod_id.strip_prefix("mod.").unwrap_or(mod_id);
             output.push_str(&format!(
                 "    {}[\"{}\"]\n",
                 Self::sanitize_id(mod_id),
-                mod_name
+                Self::escape_label(mod_name)
             ));
-            defined_mods.insert(mod_id.clone());
+            defined_mods.insert(local_mod_ref(mod_id));
         }
 
         // Add edges
         let mut seen_edges = HashSet::new();
         for req in &requires {
-            let edge = (req.from_mod.clone(), req.to_mod.clone());
+            let from_mod = local_mod_ref(&req.from_mod);
+            let to_mod = local_mod_ref(&req.to_mod);
+            let edge = (from_mod.clone(), to_mod.clone());
             if seen_edges.insert(edge) {
-                let from_id = Self::sanitize_id(&req.from_mod);
-                let to_id = Self::sanitize_id(&req.to_mod);
+                let from_id = Self::sanitize_id(&from_mod);
+                let to_id = Self::sanitize_id(&to_mod);
 
                 // Check if target exists
-                if !defined_mods.contains(&req.to_mod) {
+                if !defined_mods.contains(&to_mod) {
                     output.push_str(&format!(
                         "    {}[\"{}⚠\"]:::error\n",
                         to_id,
-                        req.to_mod.strip_prefix("mod.").unwrap_or(&req.to_mod)
+                        Self::escape_label(to_mod.strip_prefix("mod.").unwrap_or(&to_mod))
                     ));
                 }
 
@@ -242,7 +270,9 @@ impl MermaidExporter {
         for (schema_id, schema) in &schemas {
             let label = format!(
                 "{}<br/><small>{}/{}</small>",
-                schema.name, schema.kind, schema.role
+                Self::escape_label(&schema.name),
+                Self::escape_label(&schema.kind),
+                Self::escape_label(&schema.role)
             );
             let node_id = Self::sanitize_id(schema_id);
 
@@ -260,11 +290,13 @@ impl MermaidExporter {
                 "edge" => {
                     // edge: from -> to
                     if !schema.from.is_empty() && !schema.to.is_empty() {
-                        let from_id = Self::sanitize_id(&schema.from);
-                        let to_id = Self::sanitize_id(&schema.to);
+                        let from_id = Self::sanitize_id(&local_schema_ref(&schema.from));
+                        let to_id = Self::sanitize_id(&local_schema_ref(&schema.to));
                         output.push_str(&format!(
                             "    {} -.->|{}| {}\n",
-                            from_id, schema.name, to_id
+                            from_id,
+                            Self::escape_label(&schema.name),
+                            to_id
                         ));
                     }
                 }
@@ -272,14 +304,14 @@ impl MermaidExporter {
                     // boundary: contains schemas in 'over'
                     let boundary_id = Self::sanitize_id(schema_id);
                     for over_schema in &schema.over {
-                        let over_id = Self::sanitize_id(over_schema);
+                        let over_id = Self::sanitize_id(&local_schema_ref(over_schema));
                         output.push_str(&format!("    {} -.-> {}\n", boundary_id, over_id));
                     }
                 }
                 "space" => {
                     // space: based on another schema
                     if !schema.base.is_empty() {
-                        let base_id = Self::sanitize_id(&schema.base);
+                        let base_id = Self::sanitize_id(&local_schema_ref(&schema.base));
                         let space_id = Self::sanitize_id(schema_id);
                         output.push_str(&format!("    {} ==> {}\n", space_id, base_id));
                     }
@@ -300,7 +332,10 @@ impl MermaidExporter {
     /// Export all schemas and funcs used by a specific module
     pub fn export_module_detail(&self, module: &ModSection, project: &ProjectAST) -> String {
         let mut output = String::from("---\n");
-        output.push_str(&format!("title: Module - {}\n", module.name));
+        output.push_str(&format!(
+            "title: Module - {}\n",
+            Self::escape_label(&module.name)
+        ));
         output.push_str("---\n");
         output.push_str("flowchart TD\n");
 
@@ -323,20 +358,27 @@ impl MermaidExporter {
 
         // Add module node
         let mod_id = "MOD";
-        output.push_str(&format!("    {}[[\"{}\"]]\n", mod_id, module.name));
+        output.push_str(&format!(
+            "    {}[[\"{}\"]]\n",
+            mod_id,
+            Self::escape_label(&module.name)
+        ));
 
         // Add schemas
         for schema_ref in &module.schemas {
-            let schema_id = Self::sanitize_id(schema_ref);
-            if let Some(schema) = schemas.get(schema_ref) {
+            let schema_ref = local_schema_ref(schema_ref);
+            let schema_id = Self::sanitize_id(&schema_ref);
+            if let Some(schema) = schemas.get(&schema_ref) {
                 output.push_str(&format!(
                     "    {}[\"schema: {}\"]:::schema\n",
-                    schema_id, schema.name
+                    schema_id,
+                    Self::escape_label(&schema.name)
                 ));
             } else {
                 output.push_str(&format!(
                     "    {}[\"schema: {}⚠\"]:::error\n",
-                    schema_id, schema_ref
+                    schema_id,
+                    Self::escape_label(&schema_ref)
                 ));
             }
             output.push_str(&format!("    {} -.-> {}\n", mod_id, schema_id));
@@ -344,16 +386,19 @@ impl MermaidExporter {
 
         // Add funcs
         for func_ref in &module.funcs {
-            let func_id = Self::sanitize_id(func_ref);
-            if let Some(func) = funcs.get(func_ref) {
+            let func_ref = local_func_ref(func_ref);
+            let func_id = Self::sanitize_id(&func_ref);
+            if let Some(func) = funcs.get(&func_ref) {
                 output.push_str(&format!(
                     "    {}[\"func: {}\"]:::func\n",
-                    func_id, func.name
+                    func_id,
+                    Self::escape_label(&func.name)
                 ));
             } else {
                 output.push_str(&format!(
                     "    {}[\"func: {}⚠\"]:::error\n",
-                    func_id, func_ref
+                    func_id,
+                    Self::escape_label(&func_ref)
                 ));
             }
             output.push_str(&format!("    {} --> {}\n", mod_id, func_id));
@@ -378,7 +423,23 @@ impl MermaidExporter {
     }
 
     fn sanitize_id(id: &str) -> String {
-        id.replace('.', "_").replace('-', "_")
+        let mut out = String::new();
+        for ch in id.chars() {
+            match ch {
+                ch if ch.is_ascii_alphanumeric() => out.push(ch),
+                '_' => out.push_str("__"),
+                '.' => out.push('_'),
+                '-' => out.push_str("_h_"),
+                ch => out.push_str(&format!("_x{:x}_", ch as u32)),
+            }
+        }
+        if out.is_empty() {
+            "node".to_string()
+        } else if out.starts_with(|ch: char| ch.is_ascii_digit()) {
+            format!("n_{out}")
+        } else {
+            out
+        }
     }
 
     fn escape_html(s: &str) -> String {
@@ -386,6 +447,10 @@ impl MermaidExporter {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
             .replace('"', "&quot;")
+    }
+
+    fn escape_label(s: &str) -> String {
+        Self::escape_html(&s.replace('\n', " "))
     }
 
     fn get_schema_style(kind: &str) -> &'static str {
@@ -402,6 +467,39 @@ impl MermaidExporter {
 impl Default for MermaidExporter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn local_schema_ref(reference: &str) -> String {
+    let reference = reference.trim();
+    if let Some((_, name)) = reference.rsplit_once(".schema.") {
+        format!("schema.{name}")
+    } else if reference.starts_with("schema.") {
+        reference.to_string()
+    } else {
+        format!("schema.{reference}")
+    }
+}
+
+fn local_func_ref(reference: &str) -> String {
+    let reference = reference.trim();
+    if let Some((_, name)) = reference.rsplit_once(".func.") {
+        format!("func.{name}")
+    } else if reference.starts_with("func.") {
+        reference.to_string()
+    } else {
+        format!("func.{reference}")
+    }
+}
+
+fn local_mod_ref(reference: &str) -> String {
+    let reference = reference.trim();
+    if let Some((_, name)) = reference.rsplit_once(".mod.") {
+        format!("mod.{name}")
+    } else if reference.starts_with("mod.") {
+        reference.to_string()
+    } else {
+        format!("mod.{reference}")
     }
 }
 

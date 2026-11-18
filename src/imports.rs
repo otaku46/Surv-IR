@@ -82,7 +82,7 @@ pub fn parse_imports_with_alias(
     (contexts, diagnostics)
 }
 
-fn parse_import_entry(raw: &str) -> Result<(String, Option<String>), String> {
+pub(crate) fn parse_import_entry(raw: &str) -> Result<(String, Option<String>), String> {
     let parts: Vec<_> = raw.split_whitespace().collect();
     match parts.as_slice() {
         [package] => Ok((package.to_string(), None)),
@@ -119,6 +119,8 @@ mod tests {
             paths: PathsSection {
                 ir_root: "ir".into(),
             },
+            description: None,
+            files: HashMap::new(),
             packages: map,
         }
     }

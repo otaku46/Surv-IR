@@ -2,10 +2,11 @@ use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
 use std::fs;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use survibe_parser_rs::{load_project, parse_surv_file, Manifest, Section, SurvFile, SymbolKind};
+use survibe_parser_rs::{
+    load_ir_context, load_project_context, Manifest, Section, SurvFile, SymbolKind,
+};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ItemKey {
@@ -374,6 +375,34 @@ pub fn run_refs(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let path = Path::new(file_path);
+    let behavior_kind = match target.kind {
+        SymbolKind::Func => Some(survibe_parser_rs::SymbolKind::Func),
+        SymbolKind::Mod => Some(survibe_parser_rs::SymbolKind::Mod),
+        _ => None,
+    };
+    if kind_filter.is_none() && path.file_name().is_some_and(|name| name == "surv.toml") {
+        if let Some(kind) = behavior_kind {
+            let links = survibe_parser_rs::behavior::reverse_references(path, target_raw, kind)?;
+            if !links.is_empty() {
+                let mut output = build_output_items(&results, &sources);
+                output.extend(links.into_iter().map(|link| OutputItem {
+                    kind: link.kind.into(),
+                    name: link.name,
+                    source: link.source.display().to_string(),
+                }));
+                output.sort_by(|a, b| (&a.name, &a.source).cmp(&(&b.name, &b.source)));
+                if matches!(format, OutputFormat::Json) {
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                } else {
+                    for item in output {
+                        println!("{}", item.name);
+                    }
+                }
+                return Ok(());
+            }
+        }
+    }
     emit_items_output(&results, &sources, format, true)?;
     Ok(())
 }
@@ -665,21 +694,17 @@ fn format_target(target: &Target) -> String {
 
 fn load_sources(path: &Path) -> Result<Vec<SourceFile>, Box<dyn Error>> {
     let raw = fs::read_to_string(path)?;
-    if toml::from_str::<Manifest>(&raw).is_ok() {
-        let project = load_project(path)?;
-        let files = project
-            .files
-            .into_iter()
-            .map(|(path, file)| SourceFile { path, file })
-            .collect();
-        return Ok(files);
-    }
-    let file = File::open(path)?;
-    let parsed = parse_surv_file(file)?;
-    Ok(vec![SourceFile {
-        path: path.to_path_buf(),
-        file: parsed,
-    }])
+    let context = if toml::from_str::<Manifest>(&raw).is_ok() {
+        load_project_context(path)?
+    } else {
+        load_ir_context(path)?
+    };
+    Ok(context
+        .project
+        .files
+        .into_iter()
+        .map(|(path, file)| SourceFile { path, file })
+        .collect())
 }
 
 fn resolve_function_context(
@@ -1595,6 +1620,15 @@ fn render_ir_fragment(file: &SurvFile, items: &[ItemKey]) -> Result<String, Box<
                     }
                     if !module.funcs.is_empty() {
                         output.push_str(&format!("funcs = {:?}\n", module.funcs));
+                    }
+                    if !module.boundary.is_empty() {
+                        let mut boundary = toml_edit::InlineTable::new();
+                        for (kind, endpoints) in &module.boundary {
+                            let values: toml_edit::Array =
+                                endpoints.iter().map(String::as_str).collect();
+                            boundary.insert(kind, values.into());
+                        }
+                        output.push_str(&format!("boundary = {boundary}\n"));
                     }
                     if !module.pipeline.is_empty() {
                         output.push_str(&format!("pipeline = {:?}\n", module.pipeline));

@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::error::Error;
-use std::fs;
 use std::path::Path;
-use survibe_parser_rs::{load_project, Manifest, ProjectAST, Section};
+use survibe_parser_rs::{
+    load_project_context, reference_candidates, Manifest, ProjectContext, SymbolEntry, SymbolKind,
+};
 
 enum Scope {
     Packages,
@@ -21,6 +21,24 @@ enum OutputFormat {
     Mermaid,
 }
 
+#[derive(Clone)]
+struct ModuleInfo {
+    fq: String,
+    package: String,
+    namespace: Option<String>,
+    display: String,
+}
+
+#[derive(Clone)]
+struct RequireEdge {
+    from_fq: String,
+    from_display: String,
+    from_package: String,
+    to_fq: String,
+    to_display: String,
+    to_package: String,
+}
+
 pub fn run_deps(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
         print_deps_usage();
@@ -29,25 +47,22 @@ pub fn run_deps(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let manifest_path = Path::new(&args[0]);
     let options = parse_options(&args[1..])?;
+    let context = load_project_context(manifest_path)?;
+    let manifest = context
+        .manifest
+        .as_ref()
+        .ok_or("Expected a surv.toml manifest")?;
 
-    // Load manifest
-    let manifest_content = fs::read_to_string(manifest_path)?;
-    let manifest: Manifest = toml::from_str(&manifest_content)?;
-
-    // Load project
-    let project = load_project(manifest_path)?;
-
-    // Execute based on scope
     match options.format {
         OutputFormat::Text => match options.scope {
-            Scope::Packages => show_package_deps(&manifest, &project),
-            Scope::Package(ref name) => show_package_modules(&manifest, &project, name)?,
-            Scope::Module(ref name) => show_module_deps(&manifest, &project, name)?,
-            Scope::CrossPackage => show_cross_package_deps(&manifest, &project)?,
+            Scope::Packages => show_package_deps(manifest),
+            Scope::Package(name) => show_package_modules(&context, &name),
+            Scope::Module(name) => show_module_deps(&context, &name)?,
+            Scope::CrossPackage => show_cross_package_deps(&context),
         },
         OutputFormat::Mermaid => match options.scope {
-            Scope::Packages => export_package_deps_mermaid(&manifest),
-            Scope::CrossPackage => export_cross_package_mermaid(&manifest, &project)?,
+            Scope::Packages => export_package_deps_mermaid(manifest),
+            Scope::CrossPackage => export_cross_package_mermaid(&context),
             _ => {
                 eprintln!("Mermaid format only supported for --packages and --cross-package");
                 std::process::exit(1);
@@ -75,8 +90,13 @@ fn parse_options(args: &[String]) -> Result<DepsOptions, Box<dyn Error>> {
             }
             "--module" | "--mod" => {
                 if i + 1 < args.len() {
-                    let module_name = args[i + 1].strip_prefix("mod.").unwrap_or(&args[i + 1]);
-                    scope = Scope::Module(format!("mod.{}", module_name));
+                    let raw = &args[i + 1];
+                    let module_name = if raw.contains(".mod.") || raw.starts_with("mod.") {
+                        raw.clone()
+                    } else {
+                        format!("mod.{raw}")
+                    };
+                    scope = Scope::Module(module_name);
                     i += 2;
                 } else {
                     return Err("--module requires a module name".into());
@@ -107,7 +127,96 @@ fn parse_options(args: &[String]) -> Result<DepsOptions, Box<dyn Error>> {
     Ok(DepsOptions { scope, format })
 }
 
-fn show_package_deps(manifest: &Manifest, _project: &ProjectAST) {
+fn modules(context: &ProjectContext) -> Vec<ModuleInfo> {
+    context
+        .symbols
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == SymbolKind::Mod)
+        .map(|entry| ModuleInfo {
+            fq: entry.fq_name.clone(),
+            package: entry.package.clone(),
+            namespace: entry.namespace.clone(),
+            display: format!("mod.{}", entry.local_name),
+        })
+        .collect()
+}
+
+fn find_module<'a>(modules: &'a [ModuleInfo], raw: &str) -> Result<&'a ModuleInfo, Box<dyn Error>> {
+    let matches: Vec<&ModuleInfo> = modules
+        .iter()
+        .filter(|module| {
+            module.display == raw
+                || module.fq == raw
+                || module.display == format!("mod.{raw}")
+                || format!("{}.{}", module.package, module.display) == raw
+                || module
+                    .namespace
+                    .as_ref()
+                    .is_some_and(|namespace| format!("{namespace}.{}", module.display) == raw)
+        })
+        .collect();
+    match matches.as_slice() {
+        [module] => Ok(*module),
+        [] => Err(format!("Module '{raw}' not found").into()),
+        _ => {
+            let candidates = matches
+                .iter()
+                .map(|module| module.fq.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!("Ambiguous module '{raw}'; candidates: {candidates}").into())
+        }
+    }
+}
+
+fn resolved_edges(context: &ProjectContext) -> Vec<RequireEdge> {
+    let mut edges = Vec::new();
+    for (path, file) in &context.project.files {
+        let Some(import_context) = context
+            .contexts
+            .iter()
+            .find(|context| &context.file_path == path)
+        else {
+            continue;
+        };
+        let file_modules: Vec<&SymbolEntry> = context
+            .symbols
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == SymbolKind::Mod && &entry.file == path)
+            .collect();
+        for requirement in &file.requires {
+            let matches = reference_candidates(
+                &context.symbols,
+                SymbolKind::Mod,
+                &requirement.target,
+                import_context,
+            );
+            let [to] = matches.as_slice() else {
+                continue;
+            };
+            for from in &file_modules {
+                if from.fq_name == to.fq_name && file_modules.len() > 1 {
+                    continue;
+                }
+                edges.push(RequireEdge {
+                    from_fq: from.fq_name.clone(),
+                    from_display: format!("mod.{}", from.local_name),
+                    from_package: from.package.clone(),
+                    to_fq: to.fq_name.clone(),
+                    to_display: format!("mod.{}", to.local_name),
+                    to_package: to.package.clone(),
+                });
+            }
+        }
+    }
+    edges.sort_by(|left, right| (&left.from_fq, &left.to_fq).cmp(&(&right.from_fq, &right.to_fq)));
+    edges.dedup_by(|left, right| left.from_fq == right.from_fq && left.to_fq == right.to_fq);
+    edges
+}
+
+fn show_package_deps(manifest: &Manifest) {
     println!("Packages:");
     println!();
 
@@ -131,133 +240,72 @@ fn show_package_deps(manifest: &Manifest, _project: &ProjectAST) {
     }
 }
 
-fn show_package_modules(
-    manifest: &Manifest,
-    project: &ProjectAST,
-    package_name: &str,
-) -> Result<(), Box<dyn Error>> {
-    let pkg = manifest
-        .packages
-        .get(package_name)
-        .ok_or_else(|| format!("Package '{}' not found", package_name))?;
+fn show_package_modules(context: &ProjectContext, package_name: &str) {
+    let all_modules = modules(context);
+    let mut modules_in_package: Vec<&ModuleInfo> = all_modules
+        .iter()
+        .filter(|module| module.package == package_name)
+        .collect();
+    modules_in_package.sort_by(|left, right| left.display.cmp(&right.display));
 
+    let pkg = context
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest.packages.get(package_name));
     println!(
         "Package: {} (namespace: {})",
         package_name,
-        pkg.namespace.as_deref().unwrap_or("<none>")
+        pkg.and_then(|pkg| pkg.namespace.as_deref())
+            .unwrap_or("<none>")
     );
     println!();
 
-    // Build module to package mapping
-    let module_to_package = build_module_to_package_map(manifest, project)?;
-
-    // Find modules in this package
-    let mut modules_in_package: Vec<String> = project
-        .mods
-        .keys()
-        .filter(|mod_id| {
-            module_to_package
-                .get(*mod_id)
-                .map(|p| p == package_name)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-
-    modules_in_package.sort();
-
     if modules_in_package.is_empty() {
         println!("  No modules found in this package");
-        return Ok(());
+        return;
     }
 
     println!("Modules ({}):", modules_in_package.len());
-
-    // Get all dependencies
-    let normalized_reqs = project.collect_normalized_requires();
-
-    for mod_id in modules_in_package {
-        println!("  {}", mod_id);
-
-        // Find dependencies
-        let deps: Vec<_> = normalized_reqs
-            .iter()
-            .filter(|req| req.from_mod == mod_id)
-            .collect();
-
-        if !deps.is_empty() {
-            for dep in deps {
-                let dep_package = module_to_package.get(&dep.to_mod);
-                match dep_package {
-                    Some(dep_pkg) if dep_pkg == package_name => {
-                        println!("    └─> {}", dep.to_mod);
-                    }
-                    Some(dep_pkg) => {
-                        println!("    └─> {} (from {} package)", dep.to_mod, dep_pkg);
-                    }
-                    None => {
-                        println!("    └─> {} (package unknown)", dep.to_mod);
-                    }
-                }
+    let edges = resolved_edges(context);
+    for module in modules_in_package {
+        println!("  {}", module.display);
+        for edge in edges.iter().filter(|edge| edge.from_fq == module.fq) {
+            if edge.to_package == package_name {
+                println!("    └─> {}", edge.to_display);
+            } else {
+                println!(
+                    "    └─> {} (from {} package)",
+                    edge.to_display, edge.to_package
+                );
             }
         }
     }
-
-    Ok(())
 }
 
-fn show_module_deps(
-    manifest: &Manifest,
-    project: &ProjectAST,
-    module_name: &str,
-) -> Result<(), Box<dyn Error>> {
-    // Verify module exists
-    if !project.mods.contains_key(module_name) {
-        return Err(format!("Module '{}' not found", module_name).into());
-    }
+fn show_module_deps(context: &ProjectContext, module_name: &str) -> Result<(), Box<dyn Error>> {
+    let all_modules = modules(context);
+    let target = find_module(&all_modules, module_name)?;
+    let edges = resolved_edges(context);
 
-    // Build module to package mapping
-    let module_to_package = build_module_to_package_map(manifest, project)?;
-
-    let pkg = module_to_package.get(module_name);
-
-    print!("{}", module_name);
-    if let Some(pkg_name) = pkg {
-        println!(" (in {} package)", pkg_name);
-    } else {
-        println!(" (package unknown)");
-    }
+    println!("{} (in {} package)", target.display, target.package);
     println!();
 
-    // Get all dependencies
-    let normalized_reqs = project.collect_normalized_requires();
-
-    // Find dependencies (modules this module requires)
-    let deps: Vec<_> = normalized_reqs
+    let deps: Vec<_> = edges
         .iter()
-        .filter(|req| req.from_mod == module_name)
+        .filter(|edge| edge.from_fq == target.fq)
         .collect();
-
-    // Find dependents (modules that require this module)
-    let dependents: Vec<_> = normalized_reqs
+    let dependents: Vec<_> = edges
         .iter()
-        .filter(|req| req.to_mod == module_name)
+        .filter(|edge| edge.to_fq == target.fq)
         .collect();
 
     if !deps.is_empty() {
         println!("Dependencies:");
-        for dep in &deps {
-            let dep_package = module_to_package.get(&dep.to_mod);
-            match dep_package {
-                Some(dep_pkg) if pkg.map(|p| dep_pkg == p).unwrap_or(false) => {
-                    println!("  └─> {}", dep.to_mod);
-                }
-                Some(dep_pkg) => {
-                    println!("  └─> {} (in {} package)", dep.to_mod, dep_pkg);
-                }
-                None => {
-                    println!("  └─> {} (package unknown)", dep.to_mod);
-                }
+        for edge in &deps {
+            if edge.to_package == target.package {
+                println!("  └─> {}", edge.to_display);
+            } else {
+                println!("  └─> {} (in {} package)", edge.to_display, edge.to_package);
             }
         }
         println!();
@@ -265,21 +313,14 @@ fn show_module_deps(
 
     if !dependents.is_empty() {
         println!("Dependents:");
-        for dependent in &dependents {
-            let dependent_package = module_to_package.get(&dependent.from_mod);
-            match dependent_package {
-                Some(dependent_pkg) if pkg.map(|p| dependent_pkg == p).unwrap_or(false) => {
-                    println!("  └─> {}", dependent.from_mod);
-                }
-                Some(dependent_pkg) => {
-                    println!(
-                        "  └─> {} (in {} package)",
-                        dependent.from_mod, dependent_pkg
-                    );
-                }
-                None => {
-                    println!("  └─> {} (package unknown)", dependent.from_mod);
-                }
+        for edge in &dependents {
+            if edge.from_package == target.package {
+                println!("  └─> {}", edge.from_display);
+            } else {
+                println!(
+                    "  └─> {} (in {} package)",
+                    edge.from_display, edge.from_package
+                );
             }
         }
         println!();
@@ -292,47 +333,41 @@ fn show_module_deps(
     Ok(())
 }
 
-fn show_cross_package_deps(
-    manifest: &Manifest,
-    project: &ProjectAST,
-) -> Result<(), Box<dyn Error>> {
+fn show_cross_package_deps(context: &ProjectContext) {
     println!("Cross-package dependencies:");
     println!();
 
-    // Build module to package mapping
-    let module_to_package = build_module_to_package_map(manifest, project)?;
+    let mut edges: Vec<_> = resolved_edges(context)
+        .into_iter()
+        .filter(|edge| edge.from_package != edge.to_package)
+        .collect();
+    edges.sort_by(|left, right| {
+        (
+            &left.from_package,
+            &left.from_fq,
+            &left.to_package,
+            &left.to_fq,
+        )
+            .cmp(&(
+                &right.from_package,
+                &right.from_fq,
+                &right.to_package,
+                &right.to_fq,
+            ))
+    });
+    edges.dedup_by(|left, right| left.from_fq == right.from_fq && left.to_fq == right.to_fq);
 
-    // Get all dependencies
-    let normalized_reqs = project.collect_normalized_requires();
-
-    let mut cross_package_edges = Vec::new();
-
-    for req in &normalized_reqs {
-        let from_pkg = module_to_package.get(&req.from_mod);
-        let to_pkg = module_to_package.get(&req.to_mod);
-
-        if from_pkg != to_pkg && from_pkg.is_some() && to_pkg.is_some() {
-            cross_package_edges.push((
-                from_pkg.unwrap(),
-                &req.from_mod,
-                to_pkg.unwrap(),
-                &req.to_mod,
-            ));
-        }
-    }
-
-    if cross_package_edges.is_empty() {
+    if edges.is_empty() {
         println!("  No cross-package dependencies found");
-        return Ok(());
+        return;
     }
 
-    cross_package_edges.sort();
-
-    for (from_pkg, from_mod, to_pkg, to_mod) in cross_package_edges {
-        println!("  {}.{} → {}.{}", from_pkg, from_mod, to_pkg, to_mod);
+    for edge in edges {
+        println!(
+            "  {}.{} → {}.{}",
+            edge.from_package, edge.from_display, edge.to_package, edge.to_display
+        );
     }
-
-    Ok(())
 }
 
 fn export_package_deps_mermaid(manifest: &Manifest) {
@@ -348,72 +383,38 @@ fn export_package_deps_mermaid(manifest: &Manifest) {
     }
 }
 
-fn export_cross_package_mermaid(
-    manifest: &Manifest,
-    project: &ProjectAST,
-) -> Result<(), Box<dyn Error>> {
+fn export_cross_package_mermaid(context: &ProjectContext) {
     println!("graph TD");
 
-    // Build module to package mapping
-    let module_to_package = build_module_to_package_map(manifest, project)?;
+    let mut edges: Vec<_> = resolved_edges(context)
+        .into_iter()
+        .filter(|edge| edge.from_package != edge.to_package)
+        .collect();
+    edges.sort_by(|left, right| {
+        (
+            &left.from_package,
+            &left.from_fq,
+            &left.to_package,
+            &left.to_fq,
+        )
+            .cmp(&(
+                &right.from_package,
+                &right.from_fq,
+                &right.to_package,
+                &right.to_fq,
+            ))
+    });
+    edges.dedup_by(|left, right| left.from_fq == right.from_fq && left.to_fq == right.to_fq);
 
-    // Get all dependencies
-    let normalized_reqs = project.collect_normalized_requires();
-
-    let mut cross_package_edges = Vec::new();
-
-    for req in &normalized_reqs {
-        let from_pkg = module_to_package.get(&req.from_mod);
-        let to_pkg = module_to_package.get(&req.to_mod);
-
-        if from_pkg != to_pkg && from_pkg.is_some() && to_pkg.is_some() {
-            cross_package_edges.push((
-                from_pkg.unwrap(),
-                &req.from_mod,
-                to_pkg.unwrap(),
-                &req.to_mod,
-            ));
-        }
-    }
-
-    cross_package_edges.sort();
-    cross_package_edges.dedup();
-
-    for (from_pkg, from_mod, to_pkg, to_mod) in cross_package_edges {
-        let from_id = format!("{}_{}", from_pkg, from_mod).replace(['.', '-'], "_");
-        let to_id = format!("{}_{}", to_pkg, to_mod).replace(['.', '-'], "_");
-
+    for edge in edges {
+        let from_id =
+            format!("{}_{}", edge.from_package, edge.from_display).replace(['.', '-'], "_");
+        let to_id = format!("{}_{}", edge.to_package, edge.to_display).replace(['.', '-'], "_");
         println!(
             "  {}[\"{}.{}\"] --> {}[\"{}.{}\"]",
-            from_id, from_pkg, from_mod, to_id, to_pkg, to_mod
+            from_id, edge.from_package, edge.from_display, to_id, edge.to_package, edge.to_display
         );
     }
-
-    Ok(())
-}
-
-fn build_module_to_package_map(
-    manifest: &Manifest,
-    project: &ProjectAST,
-) -> Result<HashMap<String, String>, Box<dyn Error>> {
-    let mut module_to_package: HashMap<String, String> = HashMap::new();
-
-    for (pkg_name, _pkg) in &manifest.packages {
-        // Find all modules in this package's files
-        for (_file_path, file_ast) in &project.files {
-            // Check if this file belongs to this package
-            // (Simple heuristic: check if file's package header matches)
-            if file_ast.package.as_ref() == Some(pkg_name) {
-                for section in &file_ast.sections {
-                    if let Section::Mod(m) = section {
-                        module_to_package.insert(format!("mod.{}", m.name), pkg_name.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(module_to_package)
 }
 
 fn print_deps_usage() {

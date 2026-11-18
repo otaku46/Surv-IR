@@ -21,6 +21,8 @@ struct FileIndex<'a> {
     schemas: BTreeMap<String, &'a SchemaSection>,
     funcs: BTreeMap<String, &'a FuncSection>,
     mods: BTreeMap<String, &'a ModSection>,
+    namespace: Option<String>,
+    package: Option<String>,
 }
 
 impl<'a> FileIndex<'a> {
@@ -49,6 +51,54 @@ impl<'a> FileIndex<'a> {
             schemas,
             funcs,
             mods,
+            namespace: file.namespace.clone(),
+            package: file.package.clone(),
+        }
+    }
+
+    fn normalize(&self, reference: &str) -> String {
+        let reference = reference.trim();
+        for prefix in [self.namespace.as_deref(), self.package.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            let marker = format!("{prefix}.");
+            if let Some(rest) = reference.strip_prefix(&marker) {
+                if rest.starts_with("schema.")
+                    || rest.starts_with("func.")
+                    || rest.starts_with("mod.")
+                {
+                    return rest.to_string();
+                }
+            }
+        }
+        reference.to_string()
+    }
+
+    fn schema_key(&self, reference: &str) -> String {
+        let reference = self.normalize(reference);
+        if reference.starts_with("schema.") {
+            reference
+        } else {
+            format!("schema.{reference}")
+        }
+    }
+
+    fn func_key(&self, reference: &str) -> String {
+        let reference = self.normalize(reference);
+        if reference.starts_with("func.") {
+            reference
+        } else {
+            format!("func.{reference}")
+        }
+    }
+
+    fn mod_key(&self, reference: &str) -> String {
+        let reference = self.normalize(reference);
+        if reference.starts_with("mod.") {
+            reference
+        } else {
+            format!("mod.{reference}")
         }
     }
 }
@@ -65,26 +115,10 @@ fn mod_id(module: &ModSection) -> String {
     format!("mod.{}", module.name)
 }
 
-fn collect_pipeline_calls(steps: &[PipelineStep], out: &mut Vec<String>) {
-    for step in steps {
-        match step {
-            PipelineStep::Call(func) => out.push(func.clone()),
-            PipelineStep::Sequential(inner) => collect_pipeline_calls(inner, out),
-            PipelineStep::Parallel(inner) => collect_pipeline_calls(inner, out),
-            PipelineStep::Branch {
-                on_true, on_false, ..
-            } => {
-                collect_pipeline_calls(std::slice::from_ref(on_true.as_ref()), out);
-                collect_pipeline_calls(std::slice::from_ref(on_false.as_ref()), out);
-            }
-        }
-    }
-}
-
 fn check_func_schemas(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
     for func in index.funcs.values() {
         for schema in &func.input {
-            if !index.schemas.contains_key(schema) {
+            if !index.schemas.contains_key(&index.schema_key(schema)) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
                     kind: "UndefinedSchema".into(),
@@ -99,7 +133,7 @@ fn check_func_schemas(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
         }
 
         for schema in &func.output {
-            if !index.schemas.contains_key(schema) {
+            if !index.schemas.contains_key(&index.schema_key(schema)) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
                     kind: "UndefinedSchema".into(),
@@ -118,7 +152,7 @@ fn check_func_schemas(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
 fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
     for module in index.mods.values() {
         for submod in &module.submods {
-            let expected_full_name = format!("{}.{}", mod_id(module), submod);
+            let expected_full_name = index.mod_key(&format!("{}.{}", mod_id(module), submod));
             if !index.mods.contains_key(&expected_full_name) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
@@ -130,7 +164,7 @@ fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
         }
 
         for schema in &module.schemas {
-            if !index.schemas.contains_key(schema) {
+            if !index.schemas.contains_key(&index.schema_key(schema)) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
                     kind: "UndefinedSchemaInMod".into(),
@@ -141,7 +175,7 @@ fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
         }
 
         for func in &module.funcs {
-            if !index.funcs.contains_key(func) {
+            if !index.funcs.contains_key(&index.func_key(func)) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
                     kind: "UndefinedFuncInMod".into(),
@@ -151,10 +185,9 @@ fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
             }
         }
 
-        let mut pipeline_calls = Vec::new();
-        collect_pipeline_calls(&module.pipeline, &mut pipeline_calls);
+        let pipeline_calls = module.get_pipeline_calls();
         for step in &pipeline_calls {
-            if !index.funcs.contains_key(step) {
+            if !index.funcs.contains_key(&index.func_key(step)) {
                 diags.push(Diagnostic {
                     severity: "error".into(),
                     kind: "UndefinedFuncInPipeline".into(),
@@ -172,116 +205,203 @@ fn check_mod_references(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
 
 fn check_schema_links(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
     for schema in index.schemas.values() {
-        match schema.kind.as_str() {
-            "edge" => {
-                if !schema.from.is_empty() && !index.schemas.contains_key(&schema.from) {
-                    diags.push(Diagnostic {
-                        severity: "error".into(),
-                        kind: "UndefinedSchemaInEdgeFrom".into(),
-                        message: format!(
-                            "schema {}: edge.from {} is not defined",
-                            schema_id(schema),
-                            schema.from
-                        ),
-                        location: format!("{}.from({})", schema_id(schema), schema.from),
-                    });
-                }
-                if !schema.to.is_empty() && !index.schemas.contains_key(&schema.to) {
-                    diags.push(Diagnostic {
-                        severity: "error".into(),
-                        kind: "UndefinedSchemaInEdgeTo".into(),
-                        message: format!(
-                            "schema {}: edge.to {} is not defined",
-                            schema_id(schema),
-                            schema.to
-                        ),
-                        location: format!("{}.to({})", schema_id(schema), schema.to),
-                    });
-                }
+        if !schema.from.is_empty() && !index.schemas.contains_key(&index.schema_key(&schema.from)) {
+            diags.push(Diagnostic {
+                severity: "error".into(),
+                kind: "UndefinedSchemaInEdgeFrom".into(),
+                message: format!(
+                    "schema {}: edge.from {} is not defined",
+                    schema_id(schema),
+                    schema.from
+                ),
+                location: format!("{}.from({})", schema_id(schema), schema.from),
+            });
+        }
+        if !schema.to.is_empty() && !index.schemas.contains_key(&index.schema_key(&schema.to)) {
+            diags.push(Diagnostic {
+                severity: "error".into(),
+                kind: "UndefinedSchemaInEdgeTo".into(),
+                message: format!(
+                    "schema {}: edge.to {} is not defined",
+                    schema_id(schema),
+                    schema.to
+                ),
+                location: format!("{}.to({})", schema_id(schema), schema.to),
+            });
+        }
+        if !schema.base.is_empty() && !index.schemas.contains_key(&index.schema_key(&schema.base)) {
+            diags.push(Diagnostic {
+                severity: "error".into(),
+                kind: "UndefinedSchemaInBase".into(),
+                message: format!(
+                    "schema {}: base {} is not defined",
+                    schema_id(schema),
+                    schema.base
+                ),
+                location: format!("{}.base({})", schema_id(schema), schema.base),
+            });
+        }
+        for over in &schema.over {
+            if !index.schemas.contains_key(&index.schema_key(over)) {
+                diags.push(Diagnostic {
+                    severity: "error".into(),
+                    kind: "UndefinedSchemaInBoundary".into(),
+                    message: format!(
+                        "schema {}: boundary.over {} is not defined",
+                        schema_id(schema),
+                        over
+                    ),
+                    location: format!("{}.over({})", schema_id(schema), over),
+                });
             }
-            "boundary" => {
-                for over in &schema.over {
-                    if !index.schemas.contains_key(over) {
-                        diags.push(Diagnostic {
-                            severity: "error".into(),
-                            kind: "UndefinedSchemaInBoundary".into(),
-                            message: format!(
-                                "schema {}: boundary.over {} is not defined",
-                                schema_id(schema),
-                                over
-                            ),
-                            location: format!("{}.over({})", schema_id(schema), over),
-                        });
-                    }
-                }
-            }
-            _ => {}
         }
     }
 }
 
 fn check_pipeline_semantics(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
     for module in index.mods.values() {
-        if module.pipeline.is_empty() {
-            continue;
-        }
+        check_pipeline(
+            module,
+            index,
+            &module.pipeline,
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            diags,
+        );
+    }
+}
 
-        let mut pipeline_calls = Vec::new();
-        collect_pipeline_calls(&module.pipeline, &mut pipeline_calls);
-
-        let mut seen = BTreeSet::new();
-        for step in &pipeline_calls {
-            if !seen.insert(step.clone()) {
-                diags.push(Diagnostic {
-                    severity: "error".into(),
-                    kind: "PipelineCycle".into(),
-                    message: format!(
-                        "mod {}: pipeline has a cycle involving {} (appears multiple times)",
-                        mod_id(module),
-                        step
-                    ),
-                    location: format!("{}.pipeline", mod_id(module)),
-                });
+fn check_pipeline(
+    module: &ModSection,
+    index: &FileIndex<'_>,
+    steps: &[PipelineStep],
+    seen: &mut BTreeSet<String>,
+    previous: &mut BTreeSet<String>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for step in steps {
+        match step {
+            PipelineStep::Sequential(steps) => {
+                check_pipeline(module, index, steps, seen, previous, diags);
             }
-        }
-
-        for pair in pipeline_calls.windows(2) {
-            let f1 = &pair[0];
-            let f2 = &pair[1];
-
-            let Some(func1) = index.funcs.get(f1) else {
-                continue;
-            };
-            let Some(func2) = index.funcs.get(f2) else {
-                continue;
-            };
-
-            if !has_common_schema(&func1.output, &func2.input) {
-                diags.push(Diagnostic {
-                    severity: "warning".into(),
-                    kind: "PipelineTypeMismatch".into(),
-                    message: format!(
-                        "mod {}: pipeline step {} -> {} has no shared schema between output and input",
-                        mod_id(module),
-                        f1,
-                        f2
-                    ),
-                    location: format!("{}.pipeline({}->{})", mod_id(module), f1, f2),
-                });
+            PipelineStep::Parallel(steps) => {
+                check_pipeline_alternatives(module, index, steps.iter(), seen, previous, diags);
+            }
+            PipelineStep::Branch {
+                on_true, on_false, ..
+            } => {
+                check_pipeline_alternatives(
+                    module,
+                    index,
+                    [on_true.as_ref(), on_false.as_ref()].into_iter(),
+                    seen,
+                    previous,
+                    diags,
+                );
+            }
+            PipelineStep::Call(name) => {
+                let key = index.func_key(name);
+                if !module
+                    .funcs
+                    .iter()
+                    .any(|listed| index.func_key(listed) == key)
+                    && index.funcs.contains_key(&key)
+                {
+                    diags.push(Diagnostic {
+                        severity: "error".into(),
+                        kind: "PipelineFuncNotInModule".into(),
+                        message: format!(
+                            "mod {}: pipeline step {name} is absent from funcs",
+                            mod_id(module)
+                        ),
+                        location: format!("{}.pipeline({name})", mod_id(module)),
+                    });
+                }
+                if !seen.insert(key.clone()) {
+                    diags.push(Diagnostic {
+                        severity: "error".into(),
+                        kind: "PipelineCycle".into(),
+                        message: format!(
+                            "mod {}: {name} appears more than once along a pipeline path",
+                            mod_id(module)
+                        ),
+                        location: format!("{}.pipeline", mod_id(module)),
+                    });
+                }
+                if let Some(next) = index.funcs.get(&key) {
+                    for before in previous.iter() {
+                        if let Some(prior) = index.funcs.get(before) {
+                            check_pipeline_flow(module, index, before, &key, prior, next, diags);
+                        }
+                    }
+                }
+                previous.clear();
+                previous.insert(key);
             }
         }
     }
 }
 
-fn has_common_schema(a: &[String], b: &[String]) -> bool {
-    if a.is_empty() || b.is_empty() {
-        return false;
+fn check_pipeline_alternatives<'a>(
+    module: &'a ModSection,
+    index: &FileIndex<'_>,
+    alternatives: impl Iterator<Item = &'a PipelineStep>,
+    seen: &mut BTreeSet<String>,
+    previous: &mut BTreeSet<String>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let mut exits = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    for alternative in alternatives {
+        let mut path_seen = seen.clone();
+        let mut path_previous = previous.clone();
+        check_pipeline(
+            module,
+            index,
+            std::slice::from_ref(alternative),
+            &mut path_seen,
+            &mut path_previous,
+            diags,
+        );
+        visited.extend(path_seen);
+        exits.extend(path_previous);
     }
-    let mut set: BTreeSet<String> = BTreeSet::new();
-    for item in a {
-        set.insert(item.clone());
+    seen.extend(visited);
+    if !exits.is_empty() {
+        *previous = exits;
     }
-    b.iter().any(|schema| set.contains(schema))
+}
+
+fn check_pipeline_flow(
+    module: &ModSection,
+    index: &FileIndex<'_>,
+    before: &str,
+    after: &str,
+    prior: &FuncSection,
+    next: &FuncSection,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let outputs: BTreeSet<String> = prior
+        .output
+        .iter()
+        .map(|schema| index.schema_key(schema))
+        .collect();
+    let inputs: BTreeSet<String> = next
+        .input
+        .iter()
+        .map(|schema| index.schema_key(schema))
+        .collect();
+    if !outputs.is_empty() && !inputs.is_empty() && outputs.is_disjoint(&inputs) {
+        diags.push(Diagnostic {
+            severity: "warning".into(),
+            kind: "PipelineTypeMismatch".into(),
+            message: format!(
+                "mod {}: pipeline step {before} -> {after} has no shared schema between output and input",
+                mod_id(module),
+            ),
+            location: format!("{}.pipeline({before}->{after})", mod_id(module)),
+        });
+    }
 }
 
 fn check_unused_definitions(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) {
@@ -289,25 +409,24 @@ fn check_unused_definitions(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) 
 
     for func in index.funcs.values() {
         for schema in func.input.iter().chain(func.output.iter()) {
-            used_schemas.insert(schema.clone());
+            used_schemas.insert(index.schema_key(schema));
         }
     }
 
     for module in index.mods.values() {
         for schema in &module.schemas {
-            used_schemas.insert(schema.clone());
+            used_schemas.insert(index.schema_key(schema));
         }
     }
 
     for schema in index.schemas.values() {
-        if !schema.from.is_empty() {
-            used_schemas.insert(schema.from.clone());
-        }
-        if !schema.to.is_empty() {
-            used_schemas.insert(schema.to.clone());
-        }
-        for over in &schema.over {
-            used_schemas.insert(over.clone());
+        for reference in [&schema.from, &schema.to, &schema.base]
+            .into_iter()
+            .chain(&schema.over)
+        {
+            if !reference.is_empty() {
+                used_schemas.insert(index.schema_key(reference));
+            }
         }
     }
 
@@ -326,12 +445,11 @@ fn check_unused_definitions(index: &FileIndex<'_>, diags: &mut Vec<Diagnostic>) 
 
     for module in index.mods.values() {
         for func in &module.funcs {
-            used_funcs.insert(func.clone());
+            used_funcs.insert(index.func_key(func));
         }
-        let mut pipeline_calls = Vec::new();
-        collect_pipeline_calls(&module.pipeline, &mut pipeline_calls);
+        let pipeline_calls = module.get_pipeline_calls();
         for step in &pipeline_calls {
-            used_funcs.insert(step.clone());
+            used_funcs.insert(index.func_key(step));
         }
     }
 

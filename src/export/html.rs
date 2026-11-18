@@ -92,7 +92,8 @@ impl HtmlExporter {
 
     pub fn export_deploy_interactive(&self, deploy: &DeployFile) -> String {
         let graph_data = self.build_deploy_graph_data(deploy);
-        let graph_json = serde_json::to_string_pretty(&graph_data).unwrap();
+        let graph_json =
+            escape_json_for_script(&serde_json::to_string_pretty(&graph_data).unwrap());
 
         self.generate_deploy_html(&graph_json)
     }
@@ -176,7 +177,8 @@ impl HtmlExporter {
 
     pub fn export_interactive(&self, project: &ProjectAST) -> String {
         let graph_data = self.build_graph_data(project);
-        let graph_json = serde_json::to_string_pretty(&graph_data).unwrap();
+        let graph_json =
+            escape_json_for_script(&serde_json::to_string_pretty(&graph_data).unwrap());
 
         self.generate_html(&graph_json)
     }
@@ -215,7 +217,7 @@ impl HtmlExporter {
                             "edge" => {
                                 if !schema.from.is_empty() {
                                     links.push(Link {
-                                        source: schema.from.clone(),
+                                        source: local_schema_ref(&schema.from),
                                         target: format!("schema.{}", schema.name),
                                         label: "from".to_string(),
                                         link_type: "edge_from".to_string(),
@@ -224,7 +226,7 @@ impl HtmlExporter {
                                 if !schema.to.is_empty() {
                                     links.push(Link {
                                         source: format!("schema.{}", schema.name),
-                                        target: schema.to.clone(),
+                                        target: local_schema_ref(&schema.to),
                                         label: "to".to_string(),
                                         link_type: "edge_to".to_string(),
                                     });
@@ -234,7 +236,7 @@ impl HtmlExporter {
                                 for over_schema in &schema.over {
                                     links.push(Link {
                                         source: format!("schema.{}", schema.name),
-                                        target: over_schema.clone(),
+                                        target: local_schema_ref(over_schema),
                                         label: "contains".to_string(),
                                         link_type: "boundary".to_string(),
                                     });
@@ -244,7 +246,7 @@ impl HtmlExporter {
                                 if !schema.base.is_empty() {
                                     links.push(Link {
                                         source: format!("schema.{}", schema.name),
-                                        target: schema.base.clone(),
+                                        target: local_schema_ref(&schema.base),
                                         label: "based on".to_string(),
                                         link_type: "space".to_string(),
                                     });
@@ -273,7 +275,7 @@ impl HtmlExporter {
                         // Add func -> schema links
                         for input_schema in &func.input {
                             links.push(Link {
-                                source: input_schema.clone(),
+                                source: local_schema_ref(input_schema),
                                 target: format!("func.{}", func.name),
                                 label: "input".to_string(),
                                 link_type: "func_input".to_string(),
@@ -282,7 +284,7 @@ impl HtmlExporter {
                         for output_schema in &func.output {
                             links.push(Link {
                                 source: format!("func.{}", func.name),
-                                target: output_schema.clone(),
+                                target: local_schema_ref(output_schema),
                                 label: "output".to_string(),
                                 link_type: "func_output".to_string(),
                             });
@@ -309,7 +311,7 @@ impl HtmlExporter {
                         for schema_ref in &module.schemas {
                             links.push(Link {
                                 source: format!("mod.{}", module.name),
-                                target: schema_ref.clone(),
+                                target: local_schema_ref(schema_ref),
                                 label: "uses".to_string(),
                                 link_type: "mod_schema".to_string(),
                             });
@@ -319,7 +321,7 @@ impl HtmlExporter {
                         for func_ref in &module.funcs {
                             links.push(Link {
                                 source: format!("mod.{}", module.name),
-                                target: func_ref.clone(),
+                                target: local_func_ref(func_ref),
                                 label: "uses".to_string(),
                                 link_type: "mod_func".to_string(),
                             });
@@ -334,8 +336,8 @@ impl HtmlExporter {
         let requires = project.collect_normalized_requires();
         for req in requires {
             links.push(Link {
-                source: req.from_mod.clone(),
-                target: req.to_mod.clone(),
+                source: local_mod_ref(&req.from_mod),
+                target: local_mod_ref(&req.to_mod),
                 label: "requires".to_string(),
                 link_type: "mod_require".to_string(),
             });
@@ -685,6 +687,16 @@ impl HtmlExporter {
     <script>
         const data = {graph_json};
 
+        function escapeHtml(value) {{
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({{
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }})[ch]);
+        }}
+
         const width = document.getElementById('graph').clientWidth;
         const height = document.getElementById('graph').clientHeight;
 
@@ -796,41 +808,41 @@ impl HtmlExporter {
             const panel = document.getElementById('detail-panel');
             const content = document.getElementById('detail-content');
 
-            let html = `<h2>${{d.label}}</h2>`;
-            html += `<div class="detail-section"><h4>Type</h4><p>${{d.type}} (${{d.group}})</p></div>`;
+            let html = `<h2>${{escapeHtml(d.label)}}</h2>`;
+            html += `<div class="detail-section"><h4>Type</h4><p>${{escapeHtml(d.type)}} (${{escapeHtml(d.group)}})</p></div>`;
 
             if (d.metadata.kind) {{
-                html += `<div class="detail-section"><h4>Kind</h4><p>${{d.metadata.kind}}</p></div>`;
+                html += `<div class="detail-section"><h4>Kind</h4><p>${{escapeHtml(d.metadata.kind)}}</p></div>`;
             }}
 
             if (d.metadata.role) {{
-                html += `<div class="detail-section"><h4>Role</h4><p>${{d.metadata.role}}</p></div>`;
+                html += `<div class="detail-section"><h4>Role</h4><p>${{escapeHtml(d.metadata.role)}}</p></div>`;
             }}
 
             if (d.metadata.intent) {{
-                html += `<div class="detail-section"><h4>Intent</h4><p>${{d.metadata.intent}}</p></div>`;
+                html += `<div class="detail-section"><h4>Intent</h4><p>${{escapeHtml(d.metadata.intent)}}</p></div>`;
             }}
 
             if (d.metadata.purpose) {{
-                html += `<div class="detail-section"><h4>Purpose</h4><p>${{d.metadata.purpose}}</p></div>`;
+                html += `<div class="detail-section"><h4>Purpose</h4><p>${{escapeHtml(d.metadata.purpose)}}</p></div>`;
             }}
 
             if (d.metadata.input && d.metadata.input.length > 0) {{
                 html += `<div class="detail-section"><h4>Input</h4><ul class="detail-list">`;
-                d.metadata.input.forEach(i => html += `<li>${{i}}</li>`);
+                d.metadata.input.forEach(i => html += `<li>${{escapeHtml(i)}}</li>`);
                 html += `</ul></div>`;
             }}
 
             if (d.metadata.output && d.metadata.output.length > 0) {{
                 html += `<div class="detail-section"><h4>Output</h4><ul class="detail-list">`;
-                d.metadata.output.forEach(o => html += `<li>${{o}}</li>`);
+                d.metadata.output.forEach(o => html += `<li>${{escapeHtml(o)}}</li>`);
                 html += `</ul></div>`;
             }}
 
             if (Object.keys(d.metadata.fields).length > 0) {{
                 html += `<div class="detail-section"><h4>Fields</h4><table class="field-table">`;
                 for (const [key, value] of Object.entries(d.metadata.fields)) {{
-                    html += `<tr><td>${{key}}</td><td>${{value}}</td></tr>`;
+                    html += `<tr><td>${{escapeHtml(key)}}</td><td>${{escapeHtml(value)}}</td></tr>`;
                 }}
                 html += `</table></div>`;
             }}
@@ -1195,6 +1207,16 @@ impl HtmlExporter {
     <script>
         const graphData = {graph_json};
 
+        function escapeHtml(value) {{
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({{
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }})[ch]);
+        }}
+
         const width = window.innerWidth;
         const height = window.innerHeight;
 
@@ -1312,25 +1334,25 @@ impl HtmlExporter {
             node.classed('selected', false);
             d3.select(this).classed('selected', true);
 
-            let html = `<h2>${{d.label}}</h2>`;
+            let html = `<h2>${{escapeHtml(d.label)}}</h2>`;
 
             if (d.metadata.target_kind) {{
                 const badgeClass = d.metadata.target_kind === 'production' ? 'prod' :
                                  d.metadata.target_kind === 'staging' ? 'staging' : '';
-                html += `<span class="badge ${{badgeClass}}">${{d.metadata.target_kind}}</span>`;
+                html += `<span class="badge ${{badgeClass}}">${{escapeHtml(d.metadata.target_kind)}}</span>`;
             }}
 
             if (d.metadata.target) {{
                 html += `<div class="section">
                     <h3>🎯 Target</h3>
-                    <div class="item"><code>${{d.metadata.target}}</code></div>
+                    <div class="item"><code>${{escapeHtml(d.metadata.target)}}</code></div>
                 </div>`;
             }}
 
             if (d.metadata.commands && d.metadata.commands.length > 0) {{
                 html += `<div class="section"><h3>⚙️ Commands</h3>`;
                 d.metadata.commands.forEach(cmd => {{
-                    html += `<div class="item"><code>${{cmd}}</code></div>`;
+                    html += `<div class="item"><code>${{escapeHtml(cmd)}}</code></div>`;
                 }});
                 html += `</div>`;
             }}
@@ -1338,7 +1360,7 @@ impl HtmlExporter {
             if (d.metadata.secrets && d.metadata.secrets.length > 0) {{
                 html += `<div class="section"><h3>🔐 Secrets</h3>`;
                 d.metadata.secrets.forEach(s => {{
-                    html += `<div class="item">${{s}}</div>`;
+                    html += `<div class="item">${{escapeHtml(s)}}</div>`;
                 }});
                 html += `</div>`;
             }}
@@ -1346,7 +1368,7 @@ impl HtmlExporter {
             if (d.metadata.artifacts && d.metadata.artifacts.length > 0) {{
                 html += `<div class="section"><h3>📦 Produces</h3>`;
                 d.metadata.artifacts.forEach(a => {{
-                    html += `<div class="item">${{a}}</div>`;
+                    html += `<div class="item">${{escapeHtml(a)}}</div>`;
                 }});
                 html += `</div>`;
             }}
@@ -1354,7 +1376,7 @@ impl HtmlExporter {
             if (d.metadata.side_effects && d.metadata.side_effects.length > 0) {{
                 html += `<div class="section"><h3>⚠️ Side Effects</h3>`;
                 d.metadata.side_effects.forEach(se => {{
-                    html += `<div class="item warning">${{se}}</div>`;
+                    html += `<div class="item warning">${{escapeHtml(se)}}</div>`;
                 }});
                 html += `</div>`;
             }}
@@ -1362,7 +1384,7 @@ impl HtmlExporter {
             if (d.metadata.permissions) {{
                 html += `<div class="section">
                     <h3>🔑 Permissions</h3>
-                    <div class="item">${{d.metadata.permissions}}</div>
+                    <div class="item">${{escapeHtml(d.metadata.permissions)}}</div>
                 </div>`;
             }}
 
@@ -1372,7 +1394,7 @@ impl HtmlExporter {
                 html += `<div class="section"><h3>⬅️ Depends On</h3>`;
                 deps.forEach(dep => {{
                     const source = graphData.nodes.find(n => n.id === dep.source.id);
-                    html += `<div class="item">${{source.label}}</div>`;
+                    html += `<div class="item">${{escapeHtml(source ? source.label : '')}}</div>`;
                 }});
                 html += `</div>`;
             }}
@@ -1382,7 +1404,7 @@ impl HtmlExporter {
                 html += `<div class="section"><h3>➡️ Required By</h3>`;
                 dependents.forEach(dep => {{
                     const target = graphData.nodes.find(n => n.id === dep.target.id);
-                    html += `<div class="item">${{target.label}}</div>`;
+                    html += `<div class="item">${{escapeHtml(target ? target.label : '')}}</div>`;
                 }});
                 html += `</div>`;
             }}
@@ -1431,4 +1453,45 @@ impl Default for HtmlExporter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn local_schema_ref(reference: &str) -> String {
+    let reference = reference.trim();
+    if let Some((_, name)) = reference.rsplit_once(".schema.") {
+        format!("schema.{name}")
+    } else if reference.starts_with("schema.") {
+        reference.to_string()
+    } else {
+        format!("schema.{reference}")
+    }
+}
+
+fn local_func_ref(reference: &str) -> String {
+    let reference = reference.trim();
+    if let Some((_, name)) = reference.rsplit_once(".func.") {
+        format!("func.{name}")
+    } else if reference.starts_with("func.") {
+        reference.to_string()
+    } else {
+        format!("func.{reference}")
+    }
+}
+
+fn local_mod_ref(reference: &str) -> String {
+    let reference = reference.trim();
+    if let Some((_, name)) = reference.rsplit_once(".mod.") {
+        format!("mod.{name}")
+    } else if reference.starts_with("mod.") {
+        reference.to_string()
+    } else {
+        format!("mod.{reference}")
+    }
+}
+
+fn escape_json_for_script(json: &str) -> String {
+    json.replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }

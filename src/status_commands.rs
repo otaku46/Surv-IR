@@ -1,8 +1,11 @@
 use std::error::Error;
 use std::fs::{self, File};
-use std::io::Write as IoWrite;
+use std::path::Path;
 use survibe_parser_rs::ast::Section;
 use survibe_parser_rs::parser::parse_surv_file;
+use survibe_parser_rs::status_edit::{
+    set_status_value, status_module_mut, write_atomic, StatusDocument,
+};
 
 pub fn run_status(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
@@ -92,8 +95,8 @@ fn print_status_usage() {
 }
 
 fn run_status_init(filename: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(filename)?;
-    let parsed = parse_surv_file(file)?;
+    let content = fs::read_to_string(filename)?;
+    let parsed = parse_surv_file(content.as_bytes())?;
 
     // Check if status section already exists
     let has_status = parsed
@@ -124,29 +127,20 @@ fn run_status_init(filename: &str) -> Result<(), Box<dyn Error>> {
         std::process::exit(1);
     }
 
-    // Generate status section
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let mut status_text = String::from(
-        "\n# ============================================================================\n",
-    );
-    status_text.push_str("# IMPLEMENTATION STATUS\n");
-    status_text.push_str(
-        "# ============================================================================\n\n",
-    );
-    status_text.push_str("[status]\n");
-    status_text.push_str(&format!("updated_at = \"{}\"\n", today));
-
-    for module in &modules {
-        status_text.push_str(&format!("\n[status.mod.{}]\n", module));
-        status_text.push_str("state = \"todo\"\n");
-        status_text.push_str("coverage = 0.0\n");
-        status_text.push_str("notes = \"\"\n");
+    let mut document = StatusDocument::parse(&content)?;
+    {
+        let status = document.status(true).ok_or("status must be a table")?;
+        set_status_value(status, "updated_at", today);
+        for module in &modules {
+            let entry = status_module_mut(status, module, true)
+                .ok_or_else(|| format!("Invalid status entry for mod.{module}"))?;
+            set_status_value(entry, "state", "todo");
+            set_status_value(entry, "coverage", 0.0);
+            set_status_value(entry, "notes", "");
+        }
     }
-
-    // Append to file
-    let mut output = fs::OpenOptions::new().append(true).open(filename)?;
-
-    output.write_all(status_text.as_bytes())?;
+    write_atomic(Path::new(filename), &content, &document.finish())?;
 
     println!("✓ Initialized status section in {}", filename);
     println!("  Modules added: {}", modules.len());
@@ -183,7 +177,13 @@ fn run_status_set(
             }
             "--coverage" => {
                 if i + 1 < args.len() {
-                    coverage = Some(args[i + 1].parse()?);
+                    let value: f64 = args[i + 1]
+                        .parse()
+                        .map_err(|_| "Error: --coverage must be a number")?;
+                    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                        return Err("Error: --coverage must be between 0.0 and 1.0".into());
+                    }
+                    coverage = Some(value);
                     i += 2;
                 } else {
                     eprintln!("Error: --coverage requires a value");
@@ -210,65 +210,38 @@ fn run_status_set(
         eprintln!("Error: At least one of --state, --coverage, or --notes is required");
         std::process::exit(1);
     }
+    if let Some(state) = &state {
+        if !matches!(
+            state.as_str(),
+            "todo" | "skeleton" | "partial" | "done" | "blocked"
+        ) {
+            return Err(format!(
+                "Error: --state must be todo, skeleton, partial, done, or blocked (got '{state}')"
+            )
+            .into());
+        }
+    }
 
     let content = fs::read_to_string(filename)?;
-    let mut new_content = content.clone();
-
-    // Find the module status section
-    let section_header = format!("[status.mod.{}]", module_name);
-
-    if !content.contains(&section_header) {
-        eprintln!(
-            "Error: Module 'mod.{}' not found in status section",
-            module_name
-        );
-        eprintln!("Run 'surc status init {}' first", filename);
-        std::process::exit(1);
+    let mut document = StatusDocument::parse(&content)?;
+    let status = document.status(false).ok_or("No [status] section found")?;
+    let module = status_module_mut(status, module_name, false)
+        .ok_or_else(|| format!("Module 'mod.{module_name}' not found in status section"))?;
+    if let Some(state) = state {
+        set_status_value(module, "state", state);
     }
-
-    // Update fields
-    if let Some(new_state) = state {
-        let pattern = format!(
-            r#"(\[status\.mod\.{}\][^\[]*state = )"[^"]*""#,
-            regex::escape(module_name)
-        );
-        let re = regex::Regex::new(&pattern)?;
-        new_content = re
-            .replace(&new_content, format!("${{1}}\"{}\"", new_state))
-            .to_string();
+    if let Some(coverage) = coverage {
+        set_status_value(module, "coverage", coverage);
     }
-
-    if let Some(new_coverage) = coverage {
-        let pattern = format!(
-            r#"(\[status\.mod\.{}\][^\[]*coverage = )[0-9.]*"#,
-            regex::escape(module_name)
-        );
-        let re = regex::Regex::new(&pattern)?;
-        new_content = re
-            .replace(&new_content, format!("${{1}}{}", new_coverage))
-            .to_string();
+    if let Some(notes) = notes {
+        set_status_value(module, "notes", notes);
     }
-
-    if let Some(new_notes) = notes {
-        let pattern = format!(
-            r#"(\[status\.mod\.{}\][^\[]*notes = )"[^"]*""#,
-            regex::escape(module_name)
-        );
-        let re = regex::Regex::new(&pattern)?;
-        new_content = re
-            .replace(&new_content, format!("${{1}}\"{}\"", new_notes))
-            .to_string();
-    }
-
-    // Update timestamp
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let timestamp_pattern = r#"(\[status\][^\[]*updated_at = )"[^"]*""#;
-    let re = regex::Regex::new(timestamp_pattern)?;
-    new_content = re
-        .replace(&new_content, format!("${{1}}\"{}\"", today))
-        .to_string();
-
-    fs::write(filename, new_content)?;
+    set_status_value(
+        status,
+        "updated_at",
+        chrono::Local::now().format("%Y-%m-%d").to_string(),
+    );
+    write_atomic(Path::new(filename), &content, &document.finish())?;
 
     println!("✓ Updated status for mod.{}", module_name);
 
@@ -414,22 +387,9 @@ fn run_status_show(module_name: &str, filename: &str) -> Result<(), Box<dyn Erro
     Ok(())
 }
 fn run_status_sync(filename: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(filename)?;
-    let parsed = parse_surv_file(file)?;
+    let content = fs::read_to_string(filename)?;
+    let parsed = parse_surv_file(content.as_bytes())?;
 
-    // Check if status section exists
-    let has_status = parsed
-        .sections
-        .iter()
-        .any(|s| matches!(s, Section::Status(_)));
-
-    if !has_status {
-        eprintln!("No [status] section found in {}", filename);
-        eprintln!("Run 'surc status init {}' first", filename);
-        std::process::exit(1);
-    }
-
-    // Get existing status section
     let status_section = parsed
         .sections
         .iter()
@@ -440,22 +400,24 @@ fn run_status_sync(filename: &str) -> Result<(), Box<dyn Error>> {
                 None
             }
         })
-        .unwrap();
+        .ok_or_else(|| {
+            format!(
+                "No [status] section found in {filename}; run 'surc status init {filename}' first"
+            )
+        })?;
 
-    // Collect all modules
     let all_modules: Vec<String> = parsed
         .sections
         .iter()
-        .filter_map(|s| {
-            if let Section::Mod(m) = s {
-                Some(m.name.clone())
+        .filter_map(|section| {
+            if let Section::Mod(module) = section {
+                Some(module.name.clone())
             } else {
                 None
             }
         })
         .collect();
 
-    // Find modules without status
     let missing_modules: Vec<String> = all_modules
         .iter()
         .filter(|module_name| !status_section.modules.contains_key(*module_name))
@@ -467,28 +429,23 @@ fn run_status_sync(filename: &str) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Generate status entries for missing modules
-    let mut new_status_text = String::new();
-    for module in &missing_modules {
-        new_status_text.push_str(&format!("\n[status.mod.{}]\n", module));
-        new_status_text.push_str("state = \"todo\"\n");
-        new_status_text.push_str("coverage = 0.0\n");
-        new_status_text.push_str("notes = \"\"\n");
+    let mut document = StatusDocument::parse(&content)?;
+    {
+        let status = document.status(false).ok_or("No [status] section found")?;
+        for module in &missing_modules {
+            let entry = status_module_mut(status, module, true)
+                .ok_or_else(|| format!("Invalid status entry for mod.{module}"))?;
+            set_status_value(entry, "state", "todo");
+            set_status_value(entry, "coverage", 0.0);
+            set_status_value(entry, "notes", "");
+        }
+        set_status_value(
+            status,
+            "updated_at",
+            chrono::Local::now().format("%Y-%m-%d").to_string(),
+        );
     }
-
-    // Append to file
-    let mut output = fs::OpenOptions::new().append(true).open(filename)?;
-    output.write_all(new_status_text.as_bytes())?;
-
-    // Update timestamp
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let new_content = fs::read_to_string(filename)?;
-    let timestamp_pattern = r#"(\[status\][^\[]*updated_at = )"[^"]*""#;
-    let re = regex::Regex::new(timestamp_pattern)?;
-    let updated_content = re
-        .replace(&new_content, format!("${{1}}\"{}\"", today))
-        .to_string();
-    fs::write(filename, updated_content)?;
+    write_atomic(Path::new(filename), &content, &document.finish())?;
 
     println!("✓ Synced status section in {}", filename);
     println!("  Added modules: {}", missing_modules.len());

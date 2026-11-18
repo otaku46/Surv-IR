@@ -407,19 +407,25 @@ pipeline = ["func.extract", "func.transform", "func.load"]
 2. If missing, ask user: "Should I define schema.X?"
 3. If typo, fix the reference
 
-### Error: "Module Y never referenced"
+### Warning: "schema X is defined but never referenced" / "func X is defined but never referenced"
 
 **Claude should:**
-1. Explain: "This module isn't used by other modules"
-2. Ask: "Is this a top-level module (entry point)?"
-3. If not, suggest: "Should this be added to another module's dependencies?"
+1. Check whether the symbol is used by another module or function.
+2. If it is a public entry point, leave it; otherwise remove it or add it to the relevant module.
 
-### Error: "Circular dependency"
+### Error: "Ambiguous schema reference" / "Ambiguous mod reference"
 
 **Claude should:**
-1. Explain the cycle
-2. Suggest: "We can break this by introducing an intermediate module"
-3. Show restructured design
+1. Show the candidate `pkg.*` names from the diagnostic.
+2. Disambiguate with a package/namespace-qualified reference or `import` alias.
+3. Do not guess: ambiguity is an error now.
+
+### Error: "Require cycle detected"
+
+**Claude should:**
+1. Explain the cycle path (`mod.a -> mod.b -> mod.a`).
+2. Suggest breaking it with an intermediate module or by moving shared types out.
+3. Show the restructured `require` declarations.
 
 ---
 

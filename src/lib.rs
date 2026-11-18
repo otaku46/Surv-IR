@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod behavior;
 pub mod checker;
 pub mod codegen;
 pub mod deploy;
@@ -9,9 +10,12 @@ pub mod imports;
 pub mod loader;
 pub mod manifest;
 pub mod package;
+pub mod plan;
 pub mod project;
 pub mod project_checker;
 mod simple_toml;
+#[doc(hidden)]
+pub mod status_edit;
 pub mod symbol;
 
 pub mod parser;
@@ -27,8 +31,12 @@ pub use manifest::Manifest;
 pub use package::{assign_packages_to_files, PackageAssignment};
 pub use parser::{parse_file, parse_surv_file, parse_surv_ir};
 pub use project::{ModRef, NormalizedRequire, ProjectAST};
-pub use project_checker::check_project;
+pub use project_checker::{
+    check_project, check_project_manifest, load_ir_context, load_project_context, ProjectContext,
+};
+#[doc(hidden)]
+pub use simple_toml::legacy_status_ranges;
 pub use symbol::{
-    build_symbol_table, build_symbol_table_with_packages, resolve_schema_and_func_references,
-    SymbolEntry, SymbolKind, SymbolTable,
+    build_symbol_table, build_symbol_table_with_packages, reference_candidates,
+    resolve_schema_and_func_references, SymbolEntry, SymbolKind, SymbolTable,
 };

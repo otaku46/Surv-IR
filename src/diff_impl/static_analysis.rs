@@ -82,44 +82,60 @@ impl StaticAnalyzer {
         let mut symbols = Vec::new();
 
         for entry in WalkDir::new(root)
-            .follow_links(true)
+            .follow_links(false)
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_entry(|entry| {
+                entry.depth() == 0
+                    || !matches!(
+                        entry.file_name().to_str(),
+                        Some(
+                            "node_modules"
+                                | "target"
+                                | ".git"
+                                | "vendor"
+                                | "dist"
+                                | "build"
+                                | ".venv"
+                                | "__pycache__"
+                        )
+                    )
+            })
         {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    eprintln!("Warning: skipping workspace entry: {err}");
+                    continue;
+                }
+            };
             let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-
-            // Skip node_modules and target directories for performance
-            if path.components().any(|c| {
-                c.as_os_str() == "node_modules"
-                    || c.as_os_str() == "target"
-                    || c.as_os_str() == ".git"
-            }) {
+            if !entry.file_type().is_file() {
                 continue;
             }
 
             let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-            match ext {
-                "rs" if lang_filter == "both" || lang_filter == "rust" => {
-                    symbols.append(&mut self.scan_file(root, path, "rust")?);
+            let scanned = match ext {
+                "rs" if matches!(lang_filter, "both" | "all" | "rust") => {
+                    Some(self.scan_file(root, path, "rust"))
                 }
-                "ts" | "tsx"
-                    if lang_filter == "both"
-                        || lang_filter == "ts"
-                        || lang_filter == "typescript" =>
-                {
-                    symbols.append(&mut self.scan_file(root, path, "ts")?);
+                "ts" | "tsx" if matches!(lang_filter, "both" | "all" | "ts" | "typescript") => {
+                    Some(self.scan_file(root, path, "ts"))
                 }
                 "c" | "h" if lang_filter == "c" || lang_filter == "all" => {
-                    symbols.append(&mut scan_c_file(root, path)?);
+                    Some(scan_c_file(root, path))
                 }
                 "zig" if lang_filter == "zig" || lang_filter == "all" => {
-                    symbols.append(&mut scan_zig_file(root, path)?);
+                    Some(scan_zig_file(root, path))
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(result) = scanned {
+                match result {
+                    Ok(mut found) => symbols.append(&mut found),
+                    Err(err) => {
+                        eprintln!("Warning: skipping {}: {err}", path.display());
+                    }
+                }
             }
         }
 
@@ -187,6 +203,17 @@ impl StaticAnalyzer {
                 } else {
                     None
                 };
+                let fields_known = !node.has_error()
+                    && match node.kind() {
+                        "struct_item" => node
+                            .child_by_field_name("body")
+                            .is_none_or(|body| body.kind() == "field_declaration_list"),
+                        "interface_declaration" | "class_declaration" => true,
+                        "type_alias_declaration" => node
+                            .child_by_field_name("value")
+                            .is_some_and(|value| value.kind() == "object_type"),
+                        _ => false,
+                    };
                 let fields = if is_schema_kind(&kind_str) && node.kind() != "trait_item" {
                     extract_fields(def_text, lang)
                 } else {
@@ -232,6 +259,7 @@ impl StaticAnalyzer {
                     detail: None,
                     signature,
                     fields,
+                    fields_known,
                 });
             }
         }
@@ -299,16 +327,17 @@ fn extract_fields(def_text: &str, lang: &str) -> BTreeMap<String, String> {
         return BTreeMap::new();
     };
 
+    let cleaned_body = strip_line_comments(&body);
     let mut fields = BTreeMap::new();
     let field_body = if lang == "ts" {
-        body.replace(';', ",")
+        cleaned_body.replace(';', ",")
     } else {
-        body
+        cleaned_body
     };
 
     for field in split_top_level(&field_body, ',') {
         let field = field.trim();
-        if field.is_empty() || field.starts_with("//") {
+        if field.is_empty() {
             continue;
         }
         if let Some((name, type_name)) = parse_field(field, lang) {
@@ -372,6 +401,7 @@ fn extract_trait_methods(
             detail: Some("trait signature".to_string()),
             signature,
             fields: BTreeMap::new(),
+            fields_known: false,
         });
     }
 
@@ -401,8 +431,19 @@ fn extract_first_balanced_body(text: &str) -> Option<String> {
 }
 
 fn parse_field(field: &str, lang: &str) -> Option<(String, String)> {
+    let cleaned_lines = field
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut field = cleaned_lines.trim();
+    if let Some(rest) = field.strip_prefix("pub(") {
+        if let Some((_, after_vis)) = rest.split_once(')') {
+            field = after_vis.trim();
+        }
+    }
     let field = field
-        .trim()
         .trim_start_matches("pub ")
         .trim_start_matches("readonly ")
         .trim();
@@ -474,6 +515,7 @@ fn extract_c_functions(
             detail: None,
             signature: Some(signature),
             fields: BTreeMap::new(),
+            fields_known: false,
         });
     }
 
@@ -530,6 +572,7 @@ fn extract_c_structs(
             detail: Some(format!("struct {}", name)),
             signature: None,
             fields,
+            fields_known: true,
         });
     }
 
@@ -588,6 +631,7 @@ fn extract_zig_functions(
                 },
             }),
             fields: BTreeMap::new(),
+            fields_known: false,
         });
     }
 
@@ -645,6 +689,7 @@ fn extract_zig_types(
             detail: None,
             signature: None,
             fields,
+            fields_known: kind == "Struct",
         });
     }
 
@@ -1367,6 +1412,30 @@ mod tests {
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].name, "AmdgpuRing");
         assert_eq!(types[0].fields.get("id").map(String::as_str), Some("u32"));
+    }
+
+    #[test]
+    fn extracts_rust_struct_fields_with_attributes_and_doc_comments() {
+        let def = r#"
+            pub struct PackageSection {
+                /// Package root path, e.g., "design/backend" or "ir/core"
+                pub root: String,
+                #[serde(default)]
+                pub namespace: Option<String>,
+                #[serde(default)]
+                pub(crate) depends: Vec<String>,
+            }
+        "#;
+        let fields = extract_fields(def, "rust");
+        assert_eq!(fields.get("root").map(String::as_str), Some("String"));
+        assert_eq!(
+            fields.get("namespace").map(String::as_str),
+            Some("Option<String>")
+        );
+        assert_eq!(
+            fields.get("depends").map(String::as_str),
+            Some("Vec<String>")
+        );
     }
 }
 

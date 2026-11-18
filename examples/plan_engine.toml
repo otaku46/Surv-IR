@@ -1,0 +1,543 @@
+# Surv IR Design for Implementation Planning Engine (`surc plan`, based on docs/Spec-Plan-Command.md v0.1)
+
+[meta]
+name = "surv_plan_engine"
+version = "0.1.0"
+description = "Architecture of the surc plan engine: IR dependency graph builder, Tarjan SCC condenser, workspace diff overlay, topological wave scheduler, parallel track extractor, and status synchronizer"
+
+# ============================================================================
+# SCHEMAS: Reused Existing surc Core & Diff Types (1:1 with Rust codebase)
+# ============================================================================
+
+[schema.Diagnostic]
+kind = "node"
+role = "diagnostic"
+fields = { severity = "String", kind = "String", message = "String", location = "String" }
+impl.bind = "Diagnostic"
+impl.lang = "rust"
+impl.path = "diagnostic"
+
+[schema.ProjectSection]
+kind = "node"
+role = "config"
+fields = { name = "String" }
+impl.bind = "ProjectSection"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.PathsSection]
+kind = "node"
+role = "config"
+fields = { ir_root = "String" }
+impl.bind = "PathsSection"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.PackageSection]
+kind = "node"
+role = "config"
+fields = { root = "String", namespace = "Option<String>", depends = "Vec<String>" }
+impl.bind = "PackageSection"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.Manifest]
+kind = "node"
+role = "config"
+fields = { project = "ProjectSection", paths = "PathsSection", packages = "HashMap<String, PackageSection>" }
+impl.bind = "Manifest"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.ModRef]
+kind = "node"
+role = "value"
+fields = { id = "String", file = "PathBuf", name = "String" }
+impl.bind = "ModRef"
+impl.lang = "rust"
+impl.path = "project"
+
+[schema.NormalizedRequire]
+kind = "node"
+role = "value"
+fields = { from_mod = "String", to_mod = "String", raw = "String", file = "PathBuf" }
+impl.bind = "NormalizedRequire"
+impl.lang = "rust"
+impl.path = "project"
+
+[schema.ProjectAST]
+kind = "node"
+role = "context"
+fields = { files = "Vec<(PathBuf, SurvFile)>", mods = "HashMap<String, ModRef>" }
+impl.bind = "ProjectAST"
+impl.lang = "rust"
+impl.path = "project"
+
+[schema.SymbolEntry]
+kind = "node"
+role = "value"
+fields = { kind = "SymbolKind", package = "String", fq_name = "String", local_name = "String", namespace = "Option<String>", file = "PathBuf" }
+impl.bind = "SymbolEntry"
+impl.lang = "rust"
+impl.path = "symbol"
+
+[schema.SymbolTable]
+kind = "node"
+role = "context"
+fields = { entries = "Vec<SymbolEntry>" }
+impl.bind = "SymbolTable"
+impl.lang = "rust"
+impl.path = "symbol"
+
+[schema.ImportEntry]
+kind = "node"
+role = "value"
+fields = { package = "String", alias = "Option<String>" }
+impl.bind = "ImportEntry"
+impl.lang = "rust"
+impl.path = "imports"
+
+[schema.FileImportContext]
+kind = "node"
+role = "context"
+fields = { file_path = "PathBuf", self_package = "String", namespace = "Option<String>", imports = "Vec<ImportEntry>" }
+impl.bind = "FileImportContext"
+impl.lang = "rust"
+impl.path = "imports"
+
+[schema.SymbolRange]
+kind = "node"
+role = "value"
+fields = { start_line = "u32", start_char = "u32", end_line = "u32", end_char = "u32" }
+impl.bind = "SymbolRange"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.ParameterSignature]
+kind = "node"
+role = "value"
+fields = { name = "Option<String>", type_name = "Option<String>" }
+impl.bind = "ParameterSignature"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.FunctionSignature]
+kind = "node"
+role = "value"
+fields = { parameters = "Vec<ParameterSignature>", return_type = "Option<String>" }
+impl.bind = "FunctionSignature"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.ExpectedSymbol]
+kind = "node"
+role = "value"
+fields = { stable_id = "Option<String>", surv_name = "String", surv_path = "Option<String>", impl_bind = "Option<String>", impl_lang = "Option<String>", impl_path = "Option<String>", module_refs = "Vec<String>", kind = "SymbolKind", input = "Vec<String>", output = "Vec<String>", fields = "BTreeMap<String, String>" }
+impl.bind = "ExpectedSymbol"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.FoundSymbol]
+kind = "node"
+role = "value"
+fields = { language = "Option<String>", name = "String", kind = "String", uri = "String", relative_path = "Option<String>", module_path = "Option<String>", impl_path = "Option<String>", range = "SymbolRange", container_name = "Option<String>", visibility = "Option<String>", is_test = "bool", is_method = "bool", detail = "Option<String>", signature = "Option<FunctionSignature>", fields = "BTreeMap<String, String>", fields_known = "bool" }
+impl.bind = "FoundSymbol"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.SignatureMismatch]
+kind = "node"
+role = "diagnostic"
+fields = { expected = "ExpectedSymbol", found = "FoundSymbol", problems = "Vec<String>" }
+impl.bind = "SignatureMismatch"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.SchemaFieldMismatch]
+kind = "node"
+role = "diagnostic"
+fields = { expected = "ExpectedSymbol", found = "FoundSymbol", problems = "Vec<String>" }
+impl.bind = "SchemaFieldMismatch"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+[schema.DiffResult]
+kind = "node"
+role = "response"
+fields = { missing = "Vec<ExpectedSymbol>", extra = "Vec<FoundSymbol>", ambiguous = "Vec<(ExpectedSymbol, Vec<FoundSymbol>)>", signature_mismatches = "Vec<SignatureMismatch>", schema_field_mismatches = "Vec<SchemaFieldMismatch>", matched = "usize" }
+impl.bind = "DiffResult"
+impl.lang = "rust"
+impl.path = "diff_impl::types"
+
+# ============================================================================
+# SCHEMAS: Plan Engine Domain Types (New in plan::*)
+# ============================================================================
+
+[schema.PlanRequest]
+kind = "node"
+role = "request"
+fields = { ir_path = "PathBuf", workspace_root = "Option<PathBuf>", filter_mod = "Option<String>", lang = "String", strategy = "String", mapping_path = "Option<PathBuf>", sync_status = "bool", format = "String" }
+impl.lang = "rust"
+impl.path = "plan::types"
+
+[schema.LoadedPlanContext]
+kind = "node"
+role = "context"
+fields = { request = "PlanRequest", project_name = "String", manifest = "Option<Manifest>", project = "Option<ProjectAST>", symbol_table = "Option<SymbolTable>", import_contexts = "Vec<FileImportContext>", normalized_requires = "Vec<NormalizedRequire>", has_errors = "bool", diagnostics = "Vec<Diagnostic>" }
+impl.lang = "rust"
+impl.path = "plan::loader"
+
+[schema.PlanNode]
+kind = "node"
+role = "entity"
+fields = { fq_name = "String", display_ref = "String", node_kind = "String", package = "String", namespace = "Option<String>", source_file = "PathBuf", impl_bind = "Option<String>", impl_lang = "Option<String>", impl_path = "Option<String>", referenced_by_mods = "BTreeSet<String>", expected = "Option<ExpectedSymbol>", manual_state = "Option<String>", local_name = "String" }
+impl.lang = "rust"
+impl.path = "plan::graph"
+
+[schema.PlanDependencyEdge]
+kind = "edge"
+role = "relationship"
+from = "schema.PlanNode"
+to = "schema.PlanNode"
+fields = { from_fqn = "String", to_fqn = "String", edge_kind = "String", is_hard_blocker = "bool" }
+impl.lang = "rust"
+impl.path = "plan::graph"
+
+[schema.PlanDependencyGraph]
+kind = "node"
+role = "context"
+fields = { nodes = "BTreeMap<String, PlanNode>", edges = "Vec<PlanDependencyEdge>", edge_map = "BTreeMap<String, BTreeSet<(String, EdgeKind)>>" }
+impl.lang = "rust"
+impl.path = "plan::graph"
+
+[schema.PlanWorkUnit]
+kind = "node"
+role = "entity"
+fields = { unit_id = "String", unit_kind = "String", member_nodes = "Vec<PlanNode>", hard_dep_units = "BTreeSet<String>", soft_pipeline_preds = "BTreeSet<String>", is_shared_boundary = "bool" }
+impl.lang = "rust"
+impl.path = "plan::scc"
+
+[schema.CondensedPlanDag]
+kind = "node"
+role = "context"
+fields = { units = "Vec<PlanWorkUnit>", topological_order = "Vec<String>", unit_by_node = "HashMap<String, String>", has_errors = "bool", diagnostics = "Vec<Diagnostic>" }
+impl.lang = "rust"
+impl.path = "plan::scc"
+
+[schema.NodeImplStatus]
+kind = "node"
+role = "value"
+fields = { fq_name = "String", impl_state = "ImplState", matched_location = "Option<String>", drift_problems = "Vec<String>", candidate_count = "usize", is_module = "bool" }
+impl.lang = "rust"
+impl.path = "plan::overlay"
+
+[schema.OverlayedPlanDag]
+kind = "node"
+role = "context"
+fields = { dag = "Option<CondensedPlanDag>", node_statuses = "Vec<NodeImplStatus>", workspace_checked = "bool", has_errors = "bool", diagnostics = "Vec<Diagnostic>" }
+impl.lang = "rust"
+impl.path = "plan::overlay"
+
+[schema.ScheduledUnit]
+kind = "node"
+role = "entity"
+fields = { unit = "PlanWorkUnit", wave_index = "usize", readiness = "Readiness", blocked_by_units = "Vec<String>", drift_problems = "Vec<String>" }
+impl.lang = "rust"
+impl.path = "plan::scheduler"
+
+[schema.PlanWave]
+kind = "node"
+role = "entity"
+fields = { wave_index = "usize", label = "String", units = "Vec<ScheduledUnit>" }
+impl.lang = "rust"
+impl.path = "plan::scheduler"
+
+[schema.ParallelTrack]
+kind = "node"
+role = "entity"
+fields = { track_id = "String", owner_mod = "String", target_impl_paths = "BTreeSet<String>", prerequisite_boundary_units = "BTreeSet<String>", ordered_units = "Vec<ScheduledUnit>" }
+impl.lang = "rust"
+impl.path = "plan::scheduler"
+
+[schema.ModulePlanSummary]
+kind = "node"
+role = "value"
+fields = { mod_name = "String", source_file = "PathBuf", total_symbols = "usize", done_symbols = "usize", drifted_symbols = "usize", derived_state = "String", derived_coverage = "f64" }
+impl.lang = "rust"
+impl.path = "plan::scheduler"
+
+[schema.ScheduledPlan]
+kind = "node"
+role = "context"
+fields = { project_name = "String", workspace_checked = "bool", waves = "Vec<PlanWave>", parallel_tracks = "Vec<ParallelTrack>", module_summaries = "Vec<ModulePlanSummary>", diagnostics = "Vec<Diagnostic>", node_statuses = "Vec<NodeImplStatus>" }
+impl.lang = "rust"
+impl.path = "plan::scheduler"
+
+[schema.StatusSyncOutcome]
+kind = "node"
+role = "response"
+fields = { has_errors = "bool", updated_files = "Vec<PathBuf>", sync_diagnostics = "Vec<Diagnostic>" }
+impl.lang = "rust"
+impl.path = "plan::status_sync"
+
+[schema.PlanReport]
+kind = "node"
+role = "response"
+fields = { status = "String", project_name = "String", workspace_checked = "bool", total_symbols = "usize", done_symbols = "usize", drifted_symbols = "usize", ready_unit_count = "usize", blocked_unit_count = "usize", waves = "Vec<PlanWave>", parallel_tracks = "Vec<ParallelTrack>", module_summaries = "Vec<ModulePlanSummary>", status_files_updated = "Vec<PathBuf>", formatted_output = "String", diagnostics = "Vec<Diagnostic>", node_statuses = "Vec<NodeImplStatus>" }
+impl.lang = "rust"
+impl.path = "plan::reporter"
+
+# ============================================================================
+# FUNCTIONS
+# ============================================================================
+
+[func.loadPlanTarget]
+intent = "Validate PlanRequest flags, load single Surv IR file or surv.toml project (Manifest, ProjectAST, SymbolTable, FileImportContext, NormalizedRequire), and run static IR checks"
+input = ["schema.PlanRequest"]
+output = ["schema.LoadedPlanContext"]
+design_notes = "Sets has_errors = true if --sync-status is requested without workspace_root, if manifest/IR parsing fails, or if check_surv_file/check_project emits any error diagnostic"
+impl.bind = "load_plan_target"
+impl.lang = "rust"
+impl.path = "plan::loader"
+
+[func.failPlanOnInvalidInput]
+intent = "Short-circuit into status = ERROR PlanReport when PlanRequest options or input Surv IR files have static errors, without building a dependency graph"
+input = ["schema.LoadedPlanContext"]
+output = ["schema.PlanReport"]
+impl.bind = "fail_plan_on_invalid_input"
+impl.lang = "rust"
+impl.path = "plan::reporter"
+
+[func.buildDependencyGraph]
+intent = "Extract PlanNodes (schema.*, func.*, mod.*) keyed by canonical fq_name, scope to filter_mod closure when requested, and build resolved hard-blocker and soft pipeline_order PlanDependencyEdges"
+input = ["schema.LoadedPlanContext"]
+output = ["schema.PlanDependencyGraph"]
+design_notes = "Resolves field/input/output/from/to/base/over references via SymbolTable + FileImportContext, ignoring primitive scalar types and stripping self-edges (u == v) on recursive schemas"
+impl.bind = "build_plan_dependency_graph"
+impl.lang = "rust"
+impl.path = "plan::graph"
+
+[func.condenseSccAndRank]
+intent = "Condense mutually recursive schemas via Tarjan SCC into atomic PlanWorkUnits (schema_scc), reject illegal multi-module cycles, and produce a strict topological CondensedPlanDag"
+input = ["schema.LoadedPlanContext", "schema.PlanDependencyGraph"]
+output = ["schema.CondensedPlanDag"]
+design_notes = "Marks schemas referenced by 2+ distinct modules as is_shared_boundary = true; if a single-file input contains a multi-node mod.* cycle, sets CondensedPlanDag.has_errors = true"
+impl.bind = "condense_scc_and_rank"
+impl.lang = "rust"
+impl.path = "plan::scc"
+
+[func.applyDesignOnlyOverlay]
+intent = "Assign impl_state = unverified to all nodes when workspace_root is omitted, propagating any SCC cycle error from CondensedPlanDag"
+input = ["schema.LoadedPlanContext", "schema.CondensedPlanDag"]
+output = ["schema.OverlayedPlanDag"]
+impl.bind = "apply_design_only_overlay"
+impl.lang = "rust"
+impl.path = "plan::overlay"
+
+[func.applyWorkspaceDiffOverlay]
+intent = "Match each PlanNode (keyed by canonical fq_name via ExpectedSymbol.stable_id) against workspace_root symbols and classify as done, drifted, ambiguous, missing, or out_of_scope"
+input = ["schema.LoadedPlanContext", "schema.CondensedPlanDag"]
+output = ["schema.OverlayedPlanDag"]
+design_notes = "Tags ExpectedSymbol.stable_id = Some(fq_name) before matching so same-name symbols in different packages never collide; records has_errors = true on mapping parse failure or LSP/workspace scan failure instead of treating symbols as missing"
+impl.bind = "apply_workspace_diff_overlay"
+impl.lang = "rust"
+impl.path = "plan::overlay"
+
+[func.failPlanOnOverlayError]
+intent = "Short-circuit into status = ERROR PlanReport when SCC cycle detection, mapping file loading, or LSP/workspace scanning fails"
+input = ["schema.LoadedPlanContext", "schema.OverlayedPlanDag"]
+output = ["schema.PlanReport"]
+impl.bind = "fail_plan_on_overlay_error"
+impl.lang = "rust"
+impl.path = "plan::reporter"
+
+[func.scheduleWavesAndTracks]
+intent = "Compute Wave 0 (done) and Waves 1..K (longest-path topological rank over incomplete hard dependencies), determine ready vs blocked_by_units, and extract per-module ParallelTracks and ModulePlanSummaries"
+input = ["schema.LoadedPlanContext", "schema.OverlayedPlanDag"]
+output = ["schema.ScheduledPlan"]
+design_notes = "Derives mod_integration readiness from member schemas/funcs, submods, NormalizedRequires, and manual [status] blocked overrides; empty placeholder modules (0 symbols/submods) stay ready/todo unless explicitly marked done"
+impl.bind = "schedule_waves_and_tracks"
+impl.lang = "rust"
+impl.path = "plan::scheduler"
+
+[func.syncStatusSections]
+intent = "Update [status.mod.*] state (todo, skeleton, partial, done; preserving manual blocked) and coverage in IR files when --sync-status is enabled, returning updated file paths and any I/O diagnostics"
+input = ["schema.LoadedPlanContext", "schema.ScheduledPlan"]
+output = ["schema.StatusSyncOutcome"]
+impl.bind = "sync_plan_status_sections"
+impl.lang = "rust"
+impl.path = "plan::status_sync"
+
+[func.skipStatusSync]
+intent = "Emit an empty StatusSyncOutcome (has_errors = false) when --sync-status is disabled"
+input = ["schema.LoadedPlanContext", "schema.ScheduledPlan"]
+output = ["schema.StatusSyncOutcome"]
+impl.bind = "skip_plan_status_sync"
+impl.lang = "rust"
+impl.path = "plan::status_sync"
+
+[func.buildPlanReport]
+intent = "Format ScheduledPlan and StatusSyncOutcome into text, JSON, or Markdown PlanReport with wave breakdown, ready queue, blockers, parallel tracks, and updated status file list"
+input = ["schema.LoadedPlanContext", "schema.ScheduledPlan", "schema.StatusSyncOutcome"]
+output = ["schema.PlanReport"]
+design_notes = "Sets PlanReport.status = ERROR if StatusSyncOutcome.has_errors is true (e.g. read-only IR file during --sync-status), while still emitting the computed waves and diagnostics"
+impl.bind = "build_plan_report"
+impl.lang = "rust"
+impl.path = "plan::reporter"
+
+# ============================================================================
+# MODULES
+# ============================================================================
+
+[mod.plan_engine]
+purpose = "End-to-end implementation planning engine from Surv IR graphs and live workspace diffing"
+submods = ["graph_builder", "overlay", "scheduler", "reporter"]
+schemas = [
+    "schema.PlanRequest",
+    "schema.LoadedPlanContext",
+    "schema.PlanDependencyGraph",
+    "schema.CondensedPlanDag",
+    "schema.OverlayedPlanDag",
+    "schema.ScheduledPlan",
+    "schema.StatusSyncOutcome",
+    "schema.PlanReport"
+]
+funcs = [
+    "func.loadPlanTarget",
+    "func.failPlanOnInvalidInput",
+    "func.buildDependencyGraph",
+    "func.condenseSccAndRank",
+    "func.applyDesignOnlyOverlay",
+    "func.applyWorkspaceDiffOverlay",
+    "func.failPlanOnOverlayError",
+    "func.scheduleWavesAndTracks",
+    "func.syncStatusSections",
+    "func.skipStatusSync",
+    "func.buildPlanReport"
+]
+pipeline = [
+    "func.loadPlanTarget",
+    { branch = { condition = "ir_invalid_or_sync_misconfigured", on_true = "func.failPlanOnInvalidInput", on_false = [ "func.buildDependencyGraph -> func.condenseSccAndRank", { branch = { condition = "workspace_provided", on_true = "func.applyWorkspaceDiffOverlay", on_false = "func.applyDesignOnlyOverlay" } }, { branch = { condition = "overlay_or_scc_failed", on_true = "func.failPlanOnOverlayError", on_false = [ "func.scheduleWavesAndTracks", { branch = { condition = "sync_status_enabled", on_true = "func.syncStatusSections", on_false = "func.skipStatusSync" } }, "func.buildPlanReport" ] } } ] } }
+]
+
+[mod.plan_engine.graph_builder]
+purpose = "Load Surv IR / surv.toml, extract canonical PlanDependencyGraph, strip self-loops, and condense mutually recursive schemas via Tarjan SCC"
+schemas = [
+    "schema.PlanRequest",
+    "schema.Diagnostic",
+    "schema.ProjectSection",
+    "schema.PathsSection",
+    "schema.PackageSection",
+    "schema.Manifest",
+    "schema.ModRef",
+    "schema.NormalizedRequire",
+    "schema.ProjectAST",
+    "schema.SymbolEntry",
+    "schema.SymbolTable",
+    "schema.ImportEntry",
+    "schema.FileImportContext",
+    "schema.LoadedPlanContext",
+    "schema.PlanNode",
+    "schema.PlanDependencyEdge",
+    "schema.PlanDependencyGraph",
+    "schema.PlanWorkUnit",
+    "schema.CondensedPlanDag"
+]
+funcs = [
+    "func.loadPlanTarget",
+    "func.buildDependencyGraph",
+    "func.condenseSccAndRank"
+]
+pipeline = ["func.loadPlanTarget -> func.buildDependencyGraph -> func.condenseSccAndRank"]
+
+[mod.plan_engine.overlay]
+purpose = "Overlay implementation status onto CondensedPlanDag via either design-only defaults or per-fq_name diff_impl workspace analysis"
+schemas = [
+    "schema.LoadedPlanContext",
+    "schema.CondensedPlanDag",
+    "schema.SymbolRange",
+    "schema.ParameterSignature",
+    "schema.FunctionSignature",
+    "schema.ExpectedSymbol",
+    "schema.FoundSymbol",
+    "schema.SignatureMismatch",
+    "schema.SchemaFieldMismatch",
+    "schema.DiffResult",
+    "schema.NodeImplStatus",
+    "schema.OverlayedPlanDag"
+]
+funcs = [
+    "func.applyDesignOnlyOverlay",
+    "func.applyWorkspaceDiffOverlay"
+]
+pipeline = [
+    { branch = { condition = "workspace_provided", on_true = "func.applyWorkspaceDiffOverlay", on_false = "func.applyDesignOnlyOverlay" } }
+]
+
+[mod.plan_engine.scheduler]
+purpose = "Compute topological waves, ready vs blocked status, parallel implementation tracks, module coverage summaries, and optional [status] sync"
+schemas = [
+    "schema.LoadedPlanContext",
+    "schema.OverlayedPlanDag",
+    "schema.ScheduledUnit",
+    "schema.PlanWave",
+    "schema.ParallelTrack",
+    "schema.ModulePlanSummary",
+    "schema.ScheduledPlan",
+    "schema.StatusSyncOutcome"
+]
+funcs = [
+    "func.scheduleWavesAndTracks",
+    "func.syncStatusSections",
+    "func.skipStatusSync"
+]
+pipeline = [
+    "func.scheduleWavesAndTracks",
+    { branch = { condition = "sync_status_enabled", on_true = "func.syncStatusSections", on_false = "func.skipStatusSync" } }
+]
+
+[mod.plan_engine.reporter]
+purpose = "Produce OK or ERROR PlanReport in text, JSON, or Markdown format"
+schemas = [
+    "schema.LoadedPlanContext",
+    "schema.OverlayedPlanDag",
+    "schema.ScheduledPlan",
+    "schema.StatusSyncOutcome",
+    "schema.PlanReport"
+]
+funcs = [
+    "func.failPlanOnInvalidInput",
+    "func.failPlanOnOverlayError",
+    "func.buildPlanReport"
+]
+pipeline = [
+    { branch = { condition = "ir_invalid_or_sync_misconfigured", on_true = "func.failPlanOnInvalidInput", on_false = [ { branch = { condition = "overlay_or_scc_failed", on_true = "func.failPlanOnOverlayError", on_false = "func.buildPlanReport" } } ] } }
+]
+
+[status]
+updated_at = "2026-11-18"
+
+[status.mod.plan_engine]
+state = "done"
+coverage = 1.0
+notes = "Verified against existing codebase types (20/20 matched in surc diff) and docs/Spec-Plan-Command.md"
+
+[status.mod.plan_engine.graph_builder]
+state = "done"
+coverage = 1.0
+notes = "Tarjan SCC condensation + canonical SymbolTable edge extraction"
+
+[status.mod.plan_engine.overlay]
+state = "done"
+coverage = 1.0
+notes = "Per-fq_name diff_impl overlay with LSP/mapping error short-circuit"
+
+[status.mod.plan_engine.scheduler]
+state = "done"
+coverage = 1.0
+notes = "Wave 0..K topological ranking, ParallelTrack extraction, and StatusSyncOutcome"
+
+[status.mod.plan_engine.reporter]
+state = "done"
+coverage = 1.0
+notes = "Text, JSON, and Markdown PlanReport output + early-exit error reports"

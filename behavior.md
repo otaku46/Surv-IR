@@ -1,332 +1,304 @@
-# **Surv Behavior IR — 要件定義 v0.1 Draft**
+# Surv Behavior IR Specification v0.1 (Draft)
 
-Proposal
+- **Status**: Proposal / Draft v0.1
+- **Last Updated**: 2026-11-18
+- **Compatibility**: Surv IR v1.1 (`Spec-Surv-IR-v1.1.md`)
 
-2026-11-18
+---
 
-Surv IR v1.1 互換
+## Table of Contents
 
-## **1. 概要**
+1. [概要](#1-概要)
+2. [基本設計方針](#2-基本設計方針)
+3. [機能要件](#3-機能要件)
+4. [構文仕様（MVP v0.1）](#4-構文仕様mvp-v01)
+5. [形式意味論](#5-形式意味論)
+6. [式言語（Expression Language）の要件](#6-式言語expression-languageの要件)
+7. [Surv IR（Structural IR）との統合要件](#7-surv-irstructural-irとの統合要件)
+8. [検証エンジンの要件](#8-検証エンジンの要件)
+9. [非機能要件](#9-非機能要件)
+10. [開発フェーズ](#10-開発フェーズ)
+11. [MVP（v0.1）受け入れ基準](#11-mvpv01受け入れ基準)
+12. [設計上の確定事項・トレードオフ](#12-設計上の確定事項トレードオフ)
+13. [総括とアーキテクチャ方針](#13-総括とアーキテクチャ方針)
 
-**Behavior IR** は、Surv IRで定義されたシステムの振る舞いを、状態・状態遷移・制約・時間的性質として宣言的に記述するための中間表現である。
+---
 
-Surv IRがシステムの静的構造を記述するのに対し、Behavior IRはその構造上で起こり得る動的な振る舞いを記述する。
+## 1. 概要
 
-### **1.1 設計上の位置付け**
+**Behavior IR** は、Surv IR で定義されたシステムの振る舞いを、**状態（State）・状態遷移（Action）・不変条件（Invariant）・時間的性質（Temporal Property）**として宣言的に記述するための中間表現である。
 
-**Surv Project Manifest**
+既存の Surv IR（Structural IR）がシステムの**静的構造（What exists?）**を記述するのに対し、Behavior IR はその構造上で起こり得る**動的な振る舞い（What can happen?）**を記述する。
 
-シンボル解決・依存関係・検証設定
+### 1.1 設計上の位置付け
 
-**Structural IR**
+```mermaid
+flowchart TD
+    Manifest["Surv Project Manifest (surv.toml)<br/>シンボル解決・依存関係・検証設定"]
+    Struct["Structural IR (*.toml)<br/>What exists?<br/>Schema / Func / Mod / Pipeline"]
+    Behav["Behavior IR (*.behavior.toml)<br/>What can happen?<br/>State / Action / Invariant / Temporal Property"]
+    Verify["Verification & Implementation<br/>Internal BFS Explorer / TLA+ (TLC, Apalache) / Rust / TypeScript"]
 
-What exists?
+    Manifest --> Struct
+    Manifest --> Behav
+    Struct <-->|"シンボル参照・トレーサビリティ"| Behav
+    Struct --> Verify
+    Behav --> Verify
+```
 
-Schema
+Behavior IR は TLA+ の代替を目指すものではない。内部の有限状態探索器（BFS）で即座に反例検査ができると同時に、TLA+（TLC / Apalache）などの形式手法バックエンドへも変換可能な、より高水準の設計記述を提供する。ただし、TLA+ の全表現能力を再現することも目的としない。
 
-Func
+### 1.2 主要目標
 
-Mod
+1. **独立性** — 既存の Surv IR v1.1 仕様とファイルを一切変更せずに導入できる。
+2. **参照可能性** — `schema.*`、`func.*`、`mod.*` を既存の名前解決規則で参照できる。
+3. **形式性** — 状態と遷移に曖昧さのない数学的意味論を与える。
+4. **検証可能性** — 到達可能性、不変条件（Invariant）、デッドロックなどを機械的に検査できる。
+5. **並行性・非決定性** — 処理の順序が固定されないシステムや競合状態を記述できる。
+6. **実装非依存性** — 特定のプログラミング言語・フレームワーク・DB に依存しない。
+7. **段階的導入** — 単一バイナリ（`surc`）内の小規模な状態機械検査から始め、段階的に分散システムの形式検証まで拡張できる。
 
-Pipeline
+### 1.3 非目標
 
-既存のSurv IR v1.1
-
-**Behavior IR**
-
-What can happen?
-
-State
-
-Action
-
-Invariant
-
-Temporal Property
-
-今回追加する仕様
-
-統合・検証・トレーサビリティ
-
-**Verification / Implementation**
-
-TLA+ / TLC / Apalache / Rust / TypeScript
-
-Behavior IRはTLA+の代替を目指すものではない。TLA+などの形式手法に変換可能な、より高水準の設計記述を提供する。
-
-ただし、TLA+の全表現能力を再現することも目的としない。
-
-### **1.2 主要目標**
-
-1. **独立性** — 既存のSurv IR仕様とファイルを変更せずに導入できる。
-2. **参照可能性** — Schema、Func、Modを既存の名前解決規則で参照できる。
-3. **形式性** — 状態と遷移に曖昧さのない意味論を与える。
-4. **検証可能性** — 到達可能性、不変条件、デッドロックなどを機械的に検査できる。
-5. **並行性** — 処理の順序が固定されないシステムを記述できる。
-6. **実装非依存性** — 言語・フレームワーク・データベースに依存しない。
-7. **段階的導入** — 単純な状態機械から始め、分散システムの検証まで拡張できる。
-
-### **1.3 非目標**
-
-初期版では次を対象外とする。
+初期版（v0.1）では次を対象外とする：
 
 - 汎用プログラミング言語の実装
-- 実際の業務処理の自動生成
-- 任意のTLA+仕様との完全な相互変換
-- 実装コードの正しさの自動証明
-- 実時間性能や物理的時間制約の厳密な検証
+- 実際の業務処理コードの完全自動生成
+- 任意の TLA+ 仕様との双方向・完全相互変換
+- 実装コードの正しさの自動定理証明
+- 実時間性能や物理的時間制約（リアルタイムクロック）の厳密な検証
 - 無限状態空間における一般的な性質の決定
 
-特に最後の点は重要である。有限モデルにおける検証結果と、現実のシステム全体の正しさは区別しなければならない。
+> **重要:** 有限モデルにおける検証結果（`PASS`）と、現実のシステム全体の無条件の正しさは明確に区別しなければならない。
 
-## **2. 基本設計方針**
+---
 
-### **2.1 Structural IRとBehavior IRの関係**
+## 2. 基本設計方針
 
-両者は上下関係ではなく、**同じシステムを異なる観点から記述する二つの射影**とする。
+### 2.1 Structural IR と Behavior IR の関係
 
-| 観点    | Structural IR | Behavior IR         |
-| ----- | ------------- | ------------------- |
-| データ   | Schema        | State variable      |
-| 操作    | Func          | Action              |
-| 組織化   | Mod           | Behavior            |
-| 処理順序  | Pipeline      | Transition relation |
-| 制約    | 型・参照整合性       | Invariant           |
-| 時間的性質 | 原則対象外         | Safety / Liveness   |
-| 実装対応  | `impl.*`      | Actionと実装の対応        |
+両者は上下関係ではなく、**同じシステムを異なる観点から記述する2つの射影**とする。
 
-ここで重要なのは、**FuncとActionを同一視しない**ことである。
+| 観点 | Structural IR (`*.toml`) | Behavior IR (`*.behavior.toml`) |
+| :--- | :--- | :--- |
+| **データ** | `Schema`（データ構造の型） | `State variable`（時間変化するシステム状態） |
+| **操作** | `Func`（入出力変換・関数単位） | `Action`（観測可能な原子的状態遷移） |
+| **組織化** | `Mod`（モジュール構成） | `Behavior`（状態遷移系） |
+| **処理順序** | `Pipeline`（設計上の基本データフロー） | `Transition relation`（非決定的遷移関係） |
+| **制約** | 型・参照整合性 | `Invariant`（到達可能状態での不変条件） |
+| **時間的性質** | 原則対象外 | `Safety` / `Liveness` / `Deadlock-freedom` |
+| **実装対応** | `impl.*` / `.surv/mapping.toml` | `ref = "func.*"` を通じた間接対応 |
 
-例えば `func.processPayment` は実装上の関数を抽象化するが、`action.paymentSucceeded` はシステムに観測される一つの原子的な状態変化を記述する。
+ここで重要なのは、**`Func` と `Action` を同一視しない**ことである。
+例えば `func.processPayment` は実装上の関数を抽象化するが、`action.paymentSucceeded` や `action.paymentFailed` はシステムに観測される1つの原子的な状態変化を記述する。1つの `Func` が複数の `Action`（成功・失敗・リトライ等）に対応する場合も、複数の `Func` が1つの `Action` を構成する場合もある。
 
-一つのFuncが複数のActionに対応する場合も、複数のFuncが一つのActionを実現する場合もある。
+### 2.2 ファイル構成
 
-### **2.2 ファイル構成**
-
-```
+```text
 project/
 ├── surv.toml
-│
 ├── design/
 │   ├── order.toml
 │   ├── payment.toml
 │   └── inventory.toml
-│
 └── behavior/
     ├── order.behavior.toml
     ├── payment.behavior.toml
     └── checkout.behavior.toml
 ```
 
-Behavior IRは `.behavior.toml` を標準拡張子とする案を採用する。
+- Behavior IR は `.behavior.toml` を標準拡張子とする（または `[meta] ir = "surv-behavior"` ヘッダで識別する）。
+- 1ファイルに複数の `[behavior.*]` を記述できる。
+- 1つの Behavior は複数の Structural IR ファイルのシンボルを参照できる。
+- 同一の `Schema` や `Func` を複数の Behavior が共有できる。
 
-- 1ファイルに複数のBehaviorを記述できる。
-- 1つのBehaviorは複数のStructural IRファイルを参照できる。
-- 同一のSchemaやFuncを複数のBehaviorが共有できる。
-- Behavior間の参照・合成は、初期版では限定する。
+### 2.3 設計の最小単位
 
-### **2.3 設計の最小単位**
+Behavior IR の中心概念は `behavior` とする。1つの Behavior $B$ は次の5つ組で定義される：
 
-Behavior IRの中心概念は `behavior` とする。
+$$B = (V, I, A, P, F)$$
 
-一つのBehaviorは次の組で定義される。
+| 記号 | 意味 | MVP (v0.1) での扱い |
+| :---: | :--- | :--- |
+| $V$ | 状態変数（State Variables）と定義域の集合 | **必須（P0）** |
+| $I$ | 初期状態（Initial States）を定義する述語 | **必須（P0）** |
+| $A$ | 許可された状態遷移（Actions）の集合 | **必須（P0）** |
+| $P$ | 検証対象の性質（Invariants / Terminal / Temporal Properties） | **Invariant・Terminal は P0**、Liveness は P1 |
+| $F$ | 公平性（Fairness）など実行に関する仮定 | P1 で導入 |
 
-\\[ B=(V,I,A,P,F) \\]
+---
 
-| 記号      | 意味            |
-| ------- | ------------- |
-| \\(V\\) | 状態変数の集合       |
-| \\(I\\) | 初期状態を定義する述語   |
-| \\(A\\) | 許可された状態遷移の集合  |
-| \\(P\\) | 検証対象の性質       |
-| \\(F\\) | 公平性など実行に関する仮定 |
+## 3. 機能要件
 
-このうちMVPでは \\(V,I,A\\) と、不変条件を中心とする \\(P\\) を必須の中核とする。公平性 \\(F\\) は次の段階で導入する。
+優先度は **P0（MVP v0.1 必須）**、**P1（初期拡張 v0.2）**、**P2（将来 v0.3+）** とする。
 
-## **3. 機能要件**
+| ID | 機能 | 優先度 |
+| :--- | :--- | :---: |
+| **BR-001** | Behavior の宣言と管理（`[behavior.<name>]`） | P0 |
+| **BR-002** | 状態変数と有界型の定義（`[behavior.<name>.vars]`） | P0 |
+| **BR-003** | 初期状態の定義（`[behavior.<name>.init]`） | P0 |
+| **BR-004** | Action による原子的状態遷移（`[behavior.<name>.action.<act>]`） | P0 |
+| **BR-005** | Guard（遷移発火条件）の評価 | P0 |
+| **BR-006** | Invariant（不変条件）と Terminal（終端状態）の定義・検査 | P0 |
+| **BR-007** | Structural IR シンボル（`mod.*`, `func.*`, `schema.*`）の参照解決 | P0 |
+| **BR-008** | 内部エンジンによる有限状態空間の探索（BFS） | P0 |
+| **BR-009** | 最短反例トレース（Counterexample Trace）の出力（Text / JSON） | P0 |
+| **BR-010** | 並行実行・非決定的分岐の探索 | P0 |
+| **BR-011** | TLA+ へのコード生成・TLC / Apalache 連携 | P1 |
+| **BR-012** | Liveness（活性：`eventually`, `leads_to`）の記述と検証 | P1 |
+| **BR-013** | Fairness（弱公平性 `wf` / 強公平性 `sf`）の指定 | P1 |
+| **BR-014** | 複数 Behavior の合成（Composition） | P1 |
+| **BR-015** | 実装との振る舞いドリフト検出 | P1 |
+| **BR-016** | 時間・リトライ・障害注入モデル | P2 |
+| **BR-017** | 抽象モデルと詳細モデルの Refinement 検証 | P2 |
 
-優先度はP0（MVP必須）、P1（初期拡張）、P2（将来）とする。
+---
 
-| ID     | 機能              | 優先度 |
-| ------ | --------------- | --- |
-| BR-001 | Behaviorの宣言と管理  | P0  |
-| BR-002 | 状態変数と型の定義       | P0  |
-| BR-003 | 初期状態の定義         | P0  |
-| BR-004 | Actionによる状態遷移   | P0  |
-| BR-005 | Guard（実行条件）     | P0  |
-| BR-006 | Invariant（不変条件） | P0  |
-| BR-007 | Survシンボル参照      | P0  |
-| BR-008 | 有限状態モデルの探索      | P0  |
-| BR-009 | 反例トレース出力        | P0  |
-| BR-010 | TLA+への変換        | P1  |
-| BR-011 | 並行実行・非決定性       | P0  |
-| BR-012 | Liveness（活性）    | P1  |
-| BR-013 | Fairness（公平性）   | P1  |
-| BR-014 | Behaviorの合成     | P1  |
-| BR-015 | 実装とのドリフト検出      | P1  |
-| BR-016 | 時間・リトライ・障害モデル   | P2  |
-| BR-017 | Refinement検証    | P2  |
+### 3.1 Behavior（`[behavior.<name>]`）
 
-### **3.1 Behavior**
+Behavior は1つの独立した状態遷移系を表す。
 
-Behaviorは、一つの独立した状態遷移系を表す。
-
-```
+```toml
 [behavior.order_lifecycle]
-description = "Order lifecycle"
+description = "Order and payment lifecycle"
 owner = "mod.order_api"
+terminal = "order_status == 'paid' or order_status == 'cancelled'"
 ```
 
-`owner` はSurv IRのModへの参照である。
+- **`description`**: 人間向けの説明。
+- **`owner`**（任意）: 対応する Structural IR の `mod.*` への参照。指定した場合は実在するモジュールであることを検証する。
+- **`terminal`**（任意）: 正常な完了状態（終端状態）を表すブール式。デッドロック検査において、`terminal` が真である状態から有効な遷移がなくてもデッドロック（異常停止）とはみなさない。
 
-要件：
+---
 
-- Behavior名はプロジェクト内で一意に解決される。
-- `owner` は任意だが、指定した場合は実在するModを参照する。
-- Behaviorは複数の状態変数、Action、Propertyを所有できる。
-- Behavior自体は実装関数でも実行プロセスでもない。
+### 3.2 State Variable（`[behavior.<name>.vars]`）
 
-### **3.2 State Variable**
+現在のシステム状態を表す変数集合と、その型（および有限定義域）を定義する。
 
-状態は、現在のシステムの状態を表す変数の集合として定義する。
-
-```
-[behavior.order_lifecycle]
-description = "Order lifecycle"
-owner = "mod.order_api"
-
+```toml
 [behavior.order_lifecycle.vars]
 order_status = "enum(pending, paid, cancelled)"
-payment_count = "int"
+payment_count = "int(0..5)"
+retry_allowed = "bool"
 ```
 
-要件：
+#### サポートする型（v0.1）
 
-- Primitive、Enum、Record、有限集合などの型を扱う。
-- 変数は時間とともに値が変化する。
-- 状態変数には初期値または初期値制約が必要。
-- Structural IRのSchemaへの参照も許可する。
-- 検証時には状態空間を有限に制限できること。
+| 型表記 | 意味 | 有限化の扱い |
+| :--- | :--- | :--- |
+| `bool` | 真偽値（`true`, `false`） | 要素数 2 |
+| `enum(a, b, c)` | 名前付き列挙値 | 要素数 $N$ |
+| `int(min..max)` | 有界整数（閉区間 `[min, max]`） | 要素数 $\text{max} - \text{min} + 1$ |
+| `int` | 整数（範囲未指定） | `[behavior.<name>.check]` の `bounds` または `max_states` で制限 |
+| `set(T)` / `schema.*` | 有限集合・Schema 型参照（拡張） | 設定されたドメイン上限に従う |
 
-重要なのは、**StateとSchemaは異なる**という点である。
+> **設計原則（State ≠ Schema）:**
+> `schema.Order` はデータ構造のレコード型を定義するが、`order_status` はある時点でのシステムの状態変数を表す。状態空間爆発を防ぐため、検証モデルに必要な状態変数のみを抽出・抽象化して宣言することを推奨する。
 
-`schema.Order` はデータ構造を定義する。一方、`order_status` はある時点でのシステムの値を表す。
+---
 
-したがって、Schemaに含まれるフィールドをそのまま状態として扱うことを必須にしない。
+### 3.3 Initial State（`[behavior.<name>.init]`）
 
-### **3.3 Initial State**
+探索の起点となる初期状態を定義する。
 
-初期状態を定義する。
-
-```
+```toml
 [behavior.order_lifecycle.init]
-order_status = "pending"
+order_status = "'pending'"
 payment_count = 0
+retry_allowed = true
 ```
 
-初期状態は一つの具体値である必要はない。将来は複数の初期状態を許す述語もサポートする。
+- すべての状態変数に対して初期値が決定されなければならない（未初期化変数は静的エラー）。
+- 型が `enum(...)` の変数に対しては、文字列リテラル `"'pending'"` と列挙子名 `"pending"` のどちらの記法も同一の列挙値として受理する。
+- 将来拡張（P1）では、`init_predicate` による複数初期状態（例: `order_status in {'pending', 'cancelled'}`）もサポートする。
 
-例えば、モデルが複数の注文を表す場合、各注文の状態が `pending` または `cancelled` のいずれかである、という初期条件も考えられる。
+---
 
-### **3.4 Action**
+### 3.4 Action（`[behavior.<name>.action.<name>]`）
 
-Actionは、ある状態から別の状態への許可された変化を定義する。
+ある状態 $s$ から次の状態 $s'$ への許可された原子的遷移を定義する。
 
-```
+```toml
+# 1行インラインテーブル形式
 [behavior.order_lifecycle.action.pay]
+ref = "func.processPayment"
 guard = "order_status == 'pending'"
-update = {order_status = "'paid'", payment_count = "payment_count + 1"}
+update = { order_status = "'paid'", payment_count = "payment_count + 1" }
+
+# またはサブテーブル形式（更新変数が多い場合に推奨）
+[behavior.order_lifecycle.action.cancel]
+ref = "func.cancelOrder"
+guard = "order_status == 'pending'"
+
+[behavior.order_lifecycle.action.cancel.update]
+order_status = "'cancelled'"
 ```
 
-意味は次のとおり。
+#### 意味論的ルール
 
-\\[ Pay(s,s') \equiv \begin{cases} s.status = pending\\\ s'.status = paid\\\ s'.paymentCount = s.paymentCount+1 \end{cases} \\]
+$$\text{Pay}(s, s') \iff s.\text{order\_status} = \text{pending} \;\land\; s'.\text{order\_status} = \text{paid} \;\land\; s'.\text{payment\_count} = s.\text{payment\_count} + 1 \;\land\; s'.\text{retry\_allowed} = s.\text{retry\_allowed}$$
 
-ここでは、Actionに記述された変更は**原子的な1回の状態遷移**として扱う。
+1. **原子性（Atomicity）**: `update` に記述されたすべての変数変更は、1回の不可分な状態遷移として同時に適用される。
+2. **同時評価（Simultaneous Evaluation）**: `update` のすべての右辺式は、**更新前の状態 $s$** において評価される（記述順に依存しない）。
+3. **フレーム条件（Frame Condition / `UNCHANGED`）**: `update` に記載されなかった状態変数は、遷移前後で値を維持する（$s'.v = s.v$）。
+4. **非決定性（Non-determinism）**: ある状態 $s$ で複数の Action の `guard` が同時に `true` である場合、検証器はいずれの Action が発火する分岐もすべて探索する。Action のファイル上の記述順は実行順序を意味しない。
+5. **定義域制約（v0.1 は Overflow-as-Violation に固定）**: `update` の評価結果が有界型（例: `int(0..3)`）の範囲外となる場合、v0.1 では暗黙の遷移ブロックは行わず、**常に検証失敗（`violation_kind = "overflow"`）として反例報告する**。上限で遷移を発火させたくない場合は、`guard`（例: `guard = "x < 3"`）で明示する。これにより、Action の有効性（Enabledness）は常に `guard` の真偽のみで一意に定まる。
 
-また、変更対象として指定されなかった変数は変化しない。
+---
 
-この規則を明示しないと、TLA+へ変換したときに意味が曖昧になる。
+### 3.5 Invariant（`[behavior.<name>.invariant.<name>]`）
 
-Actionの要件：
+初期状態およびすべての到達可能な状態 $s$ で常に真（`true`）でなければならない条件を定義する。
 
-- `guard` が真である状態でのみ実行可能。
-- `update` は変更後の値を定義する。
-- 複数のActionが有効なとき、実行されるActionは非決定的に選択される。
-- Actionの記述順は実行順序を意味しない。
-- すべての右辺は更新前の状態で評価する。
-- 更新不能な状態では当該Actionを実行できない。
-
-### **3.5 Invariant**
-
-Invariantは、すべての到達可能な状態で成立すべき条件である。
-
-```
+```toml
 [behavior.order_lifecycle.invariant.no_double_payment]
 expr = "payment_count <= 1"
 severity = "error"
 ```
 
-例えば、同じ注文に二度支払いが発生してはいけないという業務上の制約を記述できる。
+- `expr` は副作用を持たないブール式でなければならない。
+- 初期状態 $s_0$ を含むすべての到達可能状態で評価され、`false` となる状態が見つかった時点でそこに至る最短経路（反例トレース）を生成する。
+- `severity` は `"error"`（デフォルト）または `"warning"`。
 
-要件：
+---
 
-- Invariantは状態に対する純粋な述語とする。
-- 副作用を持つ演算は許可しない。
-- 初期状態とすべての到達可能状態で評価する。
-- 違反が見つかれば、そこへ至る反例を返す。
+### 3.6 Temporal Property（時間的性質：P1）
 
-`severity` は報告上の分類であり、真偽の意味を変えない。
+Invariant（Safety:「悪いことが決して起きない」）に加え、P1 では Liveness（「良いことがいつか必ず起きる」）と Fairness（公平性）を導入する。
 
-### **3.6 Temporal Property**
-
-Invariantだけでは「何かが起きないこと」は検証できても、「いつか何かが起きること」は十分に表現できない。
-
-そこでP1では時間的性質を導入する。
-
-例：
-
-```
+```toml
 [behavior.order_lifecycle.property.eventually_resolved]
 kind = "liveness"
 expr = "eventually(order_status != 'pending')"
+fairness = ["wf(pay)", "wf(cancel)"]
 ```
 
-これは、注文がいつか必ず `pending` 以外になることを要求する。
+---
 
-ただし、これが成立するためには、処理がいつまでも先送りされないという公平性の仮定が必要になる場合がある。
+## 4. 構文仕様（MVP v0.1）
 
-TLA+では不変条件のほかに時間論理の性質や公平性も扱えるため、Behavior IRもこれらを区別する。
+### 4.1 完全な例：注文・決済ライフサイクルモデル
 
-[image](https://www.google.com/s2/favicons?domain=https://dl.tlapl.us\&sz=32)
+以下は標準 TOML v1.0 に完全準拠した `.behavior.toml` の記述例である。
 
-dl.tlapl.us+1
-
-
-
-## **4. MVP構文案**
-
-以下は **Behavior IR v0.1の提案構文**であり、現時点で実装済みの仕様ではない。
-
-### **4.1 完全な例：注文・決済モデル**
-
-```
-
-# order.behavior.toml
+```toml
+# behavior/order.behavior.toml
 package = "backend"
 namespace = "app.orders"
 
 [meta]
 ir = "surv-behavior"
+name = "order_behavior"
 version = "0.1.0"
 
 [behavior.order_lifecycle]
 description = "Order and payment lifecycle"
 owner = "mod.order_api"
+terminal = "order_status == 'paid' or order_status == 'cancelled'"
 
 [behavior.order_lifecycle.vars]
 order_status = "enum(pending, paid, cancelled)"
-payment_count = "int"
+payment_count = "int(0..3)"
 
 [behavior.order_lifecycle.init]
 order_status = "pending"
@@ -335,455 +307,311 @@ payment_count = 0
 [behavior.order_lifecycle.action.pay]
 ref = "func.processPayment"
 guard = "order_status == 'pending'"
-update = {
-  order_status = "'paid'",
-  payment_count = "payment_count + 1"
-}
+update = { order_status = "'paid'", payment_count = "payment_count + 1" }
 
 [behavior.order_lifecycle.action.cancel]
 ref = "func.cancelOrder"
 guard = "order_status == 'pending'"
-update = {order_status = "'cancelled'"}
+update = { order_status = "'cancelled'" }
 
 [behavior.order_lifecycle.invariant.no_double_payment]
 expr = "payment_count <= 1"
+severity = "error"
 
 [behavior.order_lifecycle.invariant.no_paid_cancellation]
 expr = "not (order_status == 'cancelled' and payment_count > 0)"
+severity = "error"
 
 [behavior.order_lifecycle.check]
 max_states = 10000
-
+max_depth = 100
+check_deadlock = true
 ```
 
-この例では `pay` と `cancel` のどちらも初期状態から実行可能である。
+### 4.2 状態遷移グラフと Guard 欠落時の反例シナリオ
 
-このモデルの到達可能な状態は3つ。paidとcancelledは終端状態として扱われる。
+上記の正常モデルでは、初期状態 `(pending, 0)` から `pay` または `cancel` が非決定的に選択され、到達可能状態は以下の3状態で収束する：
 
-### **4.2 インタラクティブな実行例**
-
-次のモデルは、二重決済を防ぐGuardを外した場合に何が起こるかを示す。
-
-**状態遷移シミュレーター**
-
-説明用モデル
-
-Guardを有効にする（pending時のみ支払い可能）
-
-Order status
-
-## **pending**
-
-Payment count
-
-## **0**
-
-PayCancel Reset
-
-Execution trace
-
-pending
-
-Invariant holds for this trace
-
-これは手動のトレース操作であり、全状態探索ではない。実際のモデルチェッカーは実行可能な分岐を系統的に探索する。
-
-Guardを外せば支払いが繰り返され、Invariantに違反する。これは、**型が正しく、関数の入出力も整合しているのに、システム全体としては誤った振る舞いを許容してしまう**という問題の典型例である。
-
-## **5. 形式意味論**
-
-Behavior IRを単なる状態遷移図の記述言語で終わらせないために、最小限の数学的意味論を確定する。
-
-### **5.1 状態と遷移**
-
-状態変数集合を \\(V\\)、状態空間を \\(S\\) とする。
-
-\\[ S=\prod\_{v\in V}Domain(v) \\]
-
-各Actionは状態間の関係として定義する。
-
-\\[ A_i\subseteq S\times S \\]
-
-すべてのActionを統合した遷移関係は、
-
-\\[ Next(s,s')=\bigvee\_{i=1}^{n}A_i(s,s') \\]
-
-となる。
-
-したがって、Behaviorは単なる関数のリストではなく、**非決定的な遷移関係**を定義している。
-
-これにより、複数のActionが同時に実行可能な状態でも、特定の実行順序を暗黙に強制しない。
-
-### **5.2 実行トレース**
-
-実行トレースは状態の列である。
-
-\\[ \sigma=s_0,s_1,s_2,\ldots \\]
-
-ただし、
-
-\\[ I(s_0)\land \forall i,\ Next(s_i,s\_{i+1}) \\]
-
-を満たすものとする。
-
-ここではMVPの有限トレースを定義している。TLA+への変換では、状態が変化しないステップ（stuttering）を許す無限振る舞いの意味論に対応させる。
-
-### **5.3 SafetyとLiveness**
-
-| 性質           | 問い            | 例                   |
-| ------------ | ------------- | ------------------- |
-| Safety       | 悪いことが起きないか    | 二重決済が発生しない          |
-| Liveness     | 良いことがいつか起きるか  | 受理された注文が最終的に処理される   |
-| Reachability | ある状態に到達できるか   | cancelledになることができるか |
-| Deadlock     | 遷移不能な状態が存在するか | 処理途中で停止していないか       |
-
-ここで、完了状態から遷移できないことは必ずしもエラーではない。
-
-そのため、MVPでも `terminal` 状態の指定、またはデッドロック検査から除外する条件を定義する必要がある。
-
-なお、TLA+のstutteringを許す意味論とCLI上のデッドロック検出は区別する。
-
-## **6. 式言語の要件**
-
-これは仕様上、特に重要な決定事項である。
-
-先ほどの例では、
-
-```
-guard = "order_status == 'pending'"
+```mermaid
+stateDiagram-v2
+    [*] --> Pending_0 : init (order_status = pending, payment_count = 0)
+    Pending_0 --> Paid_1 : action.pay [order_status == 'pending']
+    Pending_0 --> Cancelled_0 : action.cancel [order_status == 'pending']
+    Paid_1 --> [*] : terminal
+    Cancelled_0 --> [*] : terminal
 ```
 
-と記述した。
+一方、もし設計ミスにより `action.pay` の `guard = "order_status == 'pending'"` を書き忘れた（または緩めすぎた）場合：
 
-しかし、これは**PythonでもJavaScriptでもない、Behavior IR固有の式言語**として定義しなければならない。
+1. `Initial`: `(order_status = pending, payment_count = 0)`
+2. `Step 1 (action.pay)`: `(order_status = paid, payment_count = 1)`
+3. `Step 2 (action.pay)`: `(order_status = paid, payment_count = 2)` → **`invariant.no_double_payment` (`payment_count <= 1`) に違反！**
 
-任意のコードを評価してしまうと、言語非依存性や形式検証可能性を失う。
+このように、**「Structural IR の型・関数の入出力は完全に整合しているにもかかわらず、状態遷移のガード条件の不備によってシステム全体が不正状態に陥る」** バグを機械的に検出できるのが Behavior IR の核心的価値である。
 
-### **6.1 MVPの演算子**
+---
 
-| 種類    | 演算子                              |
-| ----- | -------------------------------- |
-| 論理    | `and`, `or`, `not`               |
-| 比較    | `==`, `!=`, `<`, `<=`, `>`, `>=` |
-| 算術    | `+`, `-`, `*`                    |
-| グループ化 | `(expr)`                         |
-| 参照    | `variable`, `record.field`       |
+## 5. 形式意味論
 
-MVPでは任意の関数呼び出し、I/O、動的コード実行を禁止する。
+### 5.1 状態空間と遷移関係
 
-### **6.2 内部AST**
+状態変数集合を $V$、各変数 $v \in V$ の定義域を $\text{Domain}(v)$ とすると、状態空間 $S$ は直積集合として定義される：
 
-TOMLの文字列を直接TLA+に置換するのではなく、式パーサーで型付きASTに変換する。
+$$S = \prod_{v \in V} \text{Domain}(v)$$
 
+各 Action $A_i$ はガード述語 $G_i(s)$ と更新関数 $U_i(s)$ によって定まる二項関係 $A_i \subseteq S \times S$ であり、システム全体の遷移関係 $\text{Next}(s, s')$ は全 Action の論理和（選言）となる：
+
+$$\text{Next}(s, s') \iff \bigvee_{i=1}^{n} A_i(s, s')$$
+
+### 5.2 実行トレース
+
+初期状態述語を $I(s)$ とすると、長さ $k$ の有限実行トレース $\sigma = s_0, s_1, \dots, s_k$ は次を満たす状態列である：
+
+$$I(s_0) \;\land\; \forall j \in \{0, \dots, k-1\},\; \text{Next}(s_j, s_{j+1})$$
+
+### 5.3 検査対象の4分類
+
+| 性質 | 問い | 判定条件 |
+| :--- | :--- | :--- |
+| **Safety (Invariant)** | 悪いことが決して起きないか | すべての到達可能状態 $s$ で $\text{Inv}(s) = \text{true}$ |
+| **Deadlock-freedom** | 意図せず遷移不能になっていないか | 到達可能状態 $s$ で有効な Action が存在しないならば $\text{Terminal}(s) = \text{true}$ |
+| **Reachability** | 各 Action や目標状態に到達可能か | 死んだ Action（一度も発火しない遷移）が存在しないか |
+| **Liveness (P1)** | 良いことがいつか必ず起きるか | 公平性仮定 $F$ を満たすすべての無限トレースで時間論理式が成立 |
+
+---
+
+## 6. 式言語（Expression Language）の要件
+
+`guard`、`update`、`invariant.expr`、`terminal` に記述される文字列は、Python や JavaScript ではなく、**Behavior IR 固有の純粋・決定的な型付き式言語**として定義する。
+
+### 6.1 MVP（v0.1）の演算子とリテラル
+
+| 分類 | 構文 | 備考 |
+| :--- | :--- | :--- |
+| **リテラル** | `true`, `false`, `0`, `42`, `'pending'` | 文字列・Enum リテラルはシングルクォート `'...'`（TOML 文字列とのエスケープ衝突回避のため） |
+| **論理演算** | `and`, `or`, `not`, `implies` (`=>`) | 短絡評価・ブール型のみ |
+| **比較演算** | `==`, `!=`, `<`, `<=`, `>`, `>=` | 同一型の値同士のみ比較可能 |
+| **集合・所属** | `in`（例: `order_status in {'pending', 'paid'}`） | 有限集合リテラルに対する所属判定 |
+| **算術演算** | `+`, `-`, `*` | 整数型のみ |
+| **条件式** | `if <cond> then <e1> else <e2>` | `update` 内での条件付き更新に利用可能 |
+| **参照** | `var_name`, `record.field` | 宣言済み状態変数のみ参照可能 |
+
+※ 任意の外部関数呼び出し、I/O、乱数、動的コード実行は一切禁止する。
+
+### 6.2 内部コンパイルパイプライン
+
+TOML 内の式文字列を直接文字列置換で変換するのではなく、専用の式パーサで型付き Semantic AST に変換する：
+
+```mermaid
+flowchart LR
+    Raw["TOML 式文字列<br/>'payment_count <= 1'"] --> Parser["Expr Parser"]
+    Parser --> AST["Untyped Expr AST"]
+    AST --> TC["Type Checker &<br/>Symbol Resolver"]
+    TC --> SemIR["Typed Semantic IR"]
+    SemIR --> Explorer["Internal BFS Explorer (v0.1)"]
+    SemIR --> TLA["TLA+ Codegen (v0.2)"]
 ```
-"payment_count <= 1"
-         │
-         ▼
-       Parser
-         │
-         ▼
-    BinaryExpr(<=)
-      ├── Var(payment_count)
-      └── IntLiteral(1)
-         │
-         ▼
-     Type Checker
-         │
-         ▼
-    Semantic IR
-         │
-    ┌────┴────┐
-    ▼         ▼
- Simulator   TLA+ Generator
-```
 
-このSemantic IRこそが、検証バックエンドから独立した意味論の中心となる。
+### 6.3 静的型検査ルール
 
-### **6.3 型検査**
+`surc check` / `surc verify` 実行時に、探索開始前に以下を静的検証する：
 
-最低限、次の検証を実施する。
+1. **未宣言変数の参照禁止**: `[behavior.<name>.vars]` にない識別子の参照はエラー。
+2. **型不一致の禁止**: `int` と `enum` の比較（`payment_count == 'pending'` 等）や、異なる `enum` 型間の比較はエラー。
+3. **Enum 列挙子の妥当性検査**: `order_status == 'shipped'` のように、`enum(pending, paid, cancelled)` に存在しない列挙子リテラルは静的エラーとして検出する。
+4. **述語型の強制**: `guard`、`invariant.expr`、`terminal` の評価結果型は必ず `bool` でなければならない。
+5. **代入型の整合性**: `update` の各キーは宣言済み状態変数であり、右辺式の型はその変数の型と一致しなければならない。
 
-- 未宣言変数の参照禁止
-- 型の異なる値の不正比較の禁止
-- 更新先変数の型整合性
-- Guard・Invariantの結果がBooleanであること
-- Actionの更新式が純粋であること
-- 同一Action内で同じ変数への重複代入を禁止
+---
 
-また、整数の意味論を明示する。検証上の整数を数学的整数とするなら、実装言語のオーバーフロー挙動とは異なる可能性があるため、数値範囲や表現方法の制約をモデル設定として持つ。
+## 7. Surv IR（Structural IR）との統合要件
 
-## **7. Surv IRとの統合要件**
+### 7.1 シンボルテーブルと名前解決の共有契約
 
-### **7.1 既存の名前解決を再利用する**
+Behavior IR 独自の名前解決器は作らず、既存の `Manifest`・`ProjectAST`・`SymbolTable`・`FileImportContext` による名前解決機構をそのまま共有する。
 
-Behavior IR独自の名前解決器は実装しない。
+```toml
+package = "orders"
+namespace = "ecom.orders"
+import = ["payments as pay"]
 
-既存の `ProjectChecker` が提供するシンボルテーブルを共有する。
-
-```
 [behavior.order_lifecycle]
-owner = "mod.order_api"
+owner = "mod.order_service"
 
 [behavior.order_lifecycle.action.pay]
-ref = "func.processPayment"
+ref = "pay.func.processPayment"
 ```
 
-ただし、ここで以下の区別が必要となる。
+- **名前解決への入力契約**:
+  1. **`SymbolTable`**（各 `SymbolEntry` の所属 `package`, `namespace`, `local_name`, 正規化 `fq_name` を保持）
+  2. **`FileImportContext`**（当該 `.behavior.toml` の `self_package`, `namespace`, および `import = ["pkg as alias"]` から構築した `ImportEntry` リスト）
+  3. **`Option<&Manifest>`**（パッケージ間の `depends` 宣言検査 `check_package_dependency` に使用）
+- これにより、別パッケージに同名の `func.processPayment` が存在する場合の曖昧性検出や、未宣言パッケージ依存エラー（`E_UNDECLARED_DEPENDENCY`）が Structural IR と完全に同一の規則で判定され、解決後の正規 `fq_name` が `NormalizedBehaviorModel` に格納される。
+- `surc refs func.processPayment surv.toml` や `surc inspect mod.order_service surv.toml` を実行した際、関連する `behavior.*` / `action.*` も逆引き参照として辿れるようにする。
 
-- `owner` はBehaviorとModの所属関係
-- `ref` はActionとFuncの設計上の対応関係
-- `guard`、`update` は実際の状態遷移の意味論
+### 7.2 `surv.toml` マニフェスト拡張
 
-**Func参照が存在することは、そのFuncの実装がActionの意味論を満たすことを保証しない。**
+既存の `surv.toml` にオプショナルなフィールドとして `behavior_root` と `[verification]` を追加可能とする（省略時は後方互換で動作し、`ir_root` 内の `*.behavior.toml` も自動認識する）：
 
-これは将来の実装検証との境界になる。
+```toml
+[project]
+name = "ecommerce"
 
-### **7.2 Manifest拡張**
-
-既存の `surv.toml` に任意の設定を追加する。
-
-```
 [paths]
 ir_root = "design"
 behavior_root = "behavior"
 
 [verification]
 backend = "internal"
-default_max_states = 100000
+default_max_states = 50000
+default_max_depth = 100
 ```
 
-既存プロジェクトに `behavior_root` がない場合も問題なく動作する。
+---
 
-### **7.3 名前空間の整合性**
+## 8. 検証エンジンの要件
 
-現行のSurv IR v1.1には、名前解決で整理すべき細部が残っている。
+### 8.1 アーキテクチャ構成と段階的短絡（Early-Exit）経路
 
-例えば、
+`surv.toml` の破損や `.behavior.toml` の TOML 構文エラーでは後続の `BehaviorFileAST` や型検査結果を構築できない。そのためフロントエンドの各段階（プロジェクト読込・TOML パース・式/型/参照検査）は失敗時に診断付きの `FrontendOutcome(has_errors = true, model = None)` へ直接短絡し、**AST や `NormalizedBehaviorModel` を要求せず BFS 探索器もバイパスして `status = ERROR` の `VerificationReport` を生成する**。
 
-- `app.orders.schema.Order`
-- `schema.Order`
-- `Order`
-
-という表記のどれを正規形式とし、どれを短縮参照とするか。
-
-Behavior IRが加わると名前衝突の可能性も増すため、**内部の正規シンボルIDは一つに統一する**ことを要求する。
-
-また、既存仕様の `require` はモジュール依存、`import` はシンボル別名という意味を維持する。Behavior側の参照を追加しても、この二つを混同しない。
-
-## **8. 検証エンジンの要件**
-
-### **8.1 段階的な検証構成**
-
-**Behavior IR Parser**
-
-TOML → AST
-
-**Type Checker / Resolver**
-
-シンボル解決・静的検証
-
-**Normalized Behavioral Model**
-
-形式意味論を持つ内部AST
-
-**Internal Explorer**
-
-v0.1
-
-有限状態探索・反例
-
-**TLA+ Backend**
-
-P1
-
-TLC / Apalache
-
-**Verification Report**
-
-結果・探索範囲・反例トレース
-
-TLCは状態を明示的に列挙するモデルチェッカーで、Apalacheは論理制約を利用するシンボリックモデルチェッカーである。後者の通常の有界検査では、指定された探索長内での反例探索と、全実行に関する証明を区別する必要がある。
-
-[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
-
-GitHub+1
-
-
-
-### **8.2 検証結果**
-
-CLI出力には、少なくとも以下の状態を用意する。
-
-| 結果        | 意味              |
-| --------- | --------------- |
-| `PASS`    | 指定した検証範囲内で性質成立  |
-| `FAIL`    | 反例が見つかった        |
-| `UNKNOWN` | 探索未完了・資源制限・判定不能 |
-| `ERROR`   | 仕様または変換のエラー     |
-
-`PASS` は有限状態空間を網羅した場合と、有界探索のみの場合で保証の範囲が異なるため、検証方式と探索範囲を必ず併記する。
-
-### **8.3 反例トレース**
-
-```
-FAIL: no_double_payment
-
-Initial:
-  order_status = pending
-  payment_count = 0
-
-Step 1: pay
-  order_status = paid
-  payment_count = 1
-
-Step 2: pay
-  order_status = paid
-  payment_count = 2
-
-Violation:
-  payment_count <= 1
+```mermaid
+flowchart TD
+    Input[".behavior.toml + surv.toml"] --> LoadProj["1. loadProjectContext<br/>(Manifest + SymbolTable)"]
+    LoadProj -->|"project_load_failed"| FailProj["failOnProjectLoad -> FrontendOutcome(error)"]
+    LoadProj -->|"ok"| ParseToml["2. parseBehaviorToml<br/>(BehaviorFileAST + FileImportContext)"]
+    ParseToml -->|"toml_parse_failed"| FailToml["failOnTomlParse -> FrontendOutcome(error)"]
+    ParseToml -->|"ok"| ParseExpr["3. parseExpressions<br/>(全式文字列を走査し ExprAST 構築)"]
+    ParseExpr -->|"expr_parse_failed"| FailExpr["failOnExprParse -> FrontendOutcome(error)"]
+    ParseExpr -->|"ok"| Sema["4. checkTypesAndResolveRefs -> buildFrontendOutcome"]
+    FailProj --> Outcome{"FrontendOutcome<br/>has_errors?"}
+    FailToml --> Outcome
+    FailExpr --> Outcome
+    Sema --> Outcome
+    Outcome -->|"Yes (model = None)"| ErrReport["buildStaticErrorReport<br/>(status = ERROR)"]
+    Outcome -->|"No (NormalizedBehaviorModel)"| BFS["exploreAndCheckBfs (v0.1)<br/>(surc verify)"]
+    Outcome -->|"No (NormalizedBehaviorModel)"| TLA["generateTlaPlus -> TLC / Apalache (v0.2)"]
+    BFS --> Report["buildVerificationReport (PASS / FAIL / UNKNOWN)<br/>+ Shortest Counterexample Trace"]
+    ErrReport --> Final["Final CLI / JSON Output"]
+    Report --> Final
+    TLA --> Final
 ```
 
-出力形式はJSONもサポートし、後のHTML可視化やエディタ連携に利用できるようにする。
+### 8.2 検証ステータスと終了コード
 
-## **9. 非機能要件**
+| ステータス | 意味 | CLI 終了コード |
+| :--- | :--- | :---: |
+| **`PASS`** | 指定された有限状態空間（または深さ）を完走し、すべての Invariant・Deadlock 条件を満たした | `0` |
+| **`FAIL`** | Invariant 違反、Deadlock、または値域オーバーフローの反例が見つかった | `1` |
+| **`UNKNOWN`** | 反例は見つからなかったが、`max_states` 等の探索上限に達して未探索状態が残った | `2` |
+| **`ERROR`** | `surv.toml` 読み込み失敗、構文エラー、型検査エラー、または未解決の Surv シンボル参照が存在する | `1` |
 
-| 分類     | 要件                                  |
-| ------ | ----------------------------------- |
-| 互換性    | Surv IR v1.1を破壊しない                  |
-| 可読性    | 人間が小規模モデルを直接編集できる                   |
-| 決定性    | 同一モデル・同一設定に対して同一の探索結果を再現可能          |
-| 安全性    | 式評価で任意のコードを実行しない                    |
-| 性能     | 状態数・探索時間・メモリ使用量の上限を設定できる            |
-| 診断性    | ファイル名・行番号・シンボル・違反条件を報告する            |
-| 拡張性    | バックエンドを追加してもBehavior IRの基本意味論を変更しない |
-| テスト可能性 | パーサー・型検査・遷移意味論・バックエンド変換を個別にテストできる   |
+> **重要:** `max_states` や `max_depth` に到達して探索を打ち切った場合、決して `PASS` を返してはならない（必ず `UNKNOWN` とし、探索済み状態数と未展開キュー数を併記する）。
 
-性能については、初期から大規模分散システムの完全探索を保証しない。
+### 8.3 最短反例の保証規則（深さ同期2フェーズ BFS）とトレース表現
 
-また、同一入力に対する再現性は確保するが、探索順序の一致まで保証する必要はない。例えばBFSを採用する内部探索器であれば、最短反例の探索を基本方針としてよい。
+#### 1. 最短ステップ保証のための検査順序（Level-Synchronous Two-Phase BFS）
+同じ深さ $d$ のフロンティアに状態 $A$ と状態 $B$ があり、「$A$ からの Action 発火で深さ $d+1$ の範囲外オーバーフローが起きる（ステップ数 $d+1$）」一方で、「状態 $B$ 自体が Invariant 違反または Deadlock を起こしている（ステップ数 $d$）」ケースを考える。$A$ の遷移展開中に即座に停止すると、より短い $B$（長さ $d$）を見逃して長さ $d+1$ の反例を返してしまう。
 
-## **10. 開発フェーズ**
+これを防ぎ、**反例のステップ数最小性**を厳密に保証するため、深さ $d = 0, 1, \dots$ ごとに以下の2フェーズ順序で検査する：
 
-**Phase 1 — Behavior Core（v0.1）**
+1. **Phase A（深さ $d$ の状態検査 — ステップ数 $d$）**:
+   深さ $d$ のフロンティアにある**すべての状態**について、先に Invariant と非 `terminal` Deadlock を検査する。ここで Action の有効性は **`guard(s) == true` のみで判定**する（`guard` が省略されている Action は常に有効）。したがって、`guard == true` となる Action が 0 個かつ `terminal == false` であればステップ数 $d$ の Deadlock 反例として即座に停止する。一方、非終端状態で唯一の Action が `guard == true` かつ `x = 3` から `x + 1`（範囲 `0..3` 外）へ更新する場合、Phase A では有効 Action 1 個と数えて Deadlock とはせず Phase B へ進む。
+2. **Phase B（深さ $d \to d+1$ の遷移展開 — ステップ数 $d+1$）**:
+   深さ $d$ の全状態が Phase A を通過した後にのみ、各状態から `guard(s) == true` である Action の `update` を評価する。ここで有界型 `int(min..max)` の範囲外更新が検出された場合はステップ数 $d+1$ の `overflow` 反例として即座に停止し、正常な未訪問状態のみを深さ $d+1$ のフロンティアへ追加する。
 
-状態・Guard・Action・Invariant・参照解決・有限状態探索・反例出力。TLA+なしでも動作する最小実装。
+#### 2. 構造化された状態値と「遷移成功ステップ」vs「範囲外更新試行」の分離
+- **型付き状態バインディング（`StateVarBinding`）**: 各 `ModelState` の変数値は文字列ダンプではなく、`{ var_name, value: bool | int | enum }` の構造化配列として保持し、JSON 利用側が文字列を再パースせずに状態を再生できるようにする。
+- **成功した遷移（`TraceStep`）と範囲外試行（`OverflowAttempt`）の区別**:
+  - `int(0..3)` に対して `payment_count = 4` を試みた場合、遷移先の有効な `ModelState` は存在しない。
+  - そのため、`CounterexampleTrace.steps`（`TraceStep[]`）には**有効に成立した状態遷移（`from_state` → `to_state`）のみ**を格納する。
+  - 範囲外更新による違反時は、`violated_state = None` とし、`overflow_attempt`（`from_state`, `action_name`, `target_var`, `attempted_value`, `min_bound`, `max_bound`）に試行情報を記録する。
 
-**Phase 2 — Formal Verification（v0.2）**
+```text
+✗ FAIL: behavior.order_lifecycle
+  Violated invariant: no_double_payment (payment_count <= 1)
+  Explored: 3 states (depth 2)
 
-TLA+生成、TLC連携、時間的性質、Fairness、検証モデルの有限化設定。
+Counterexample Trace:
+  State 0 (init):
+    order_status  = 'pending'
+    payment_count = 0
 
-**Phase 3 — Composition（v0.3）**
+  Step 1 --[action.pay (ref: func.processPayment)]--> State 1:
+    order_status  = 'paid'
+    payment_count = 1
 
-複数Behaviorの合成、共有状態、プロセス別のAction、非同期メッセージ、障害注入。
-
-**Phase 4 — Refinement & Implementation（v0.4以降）**
-
-抽象モデルと詳細モデルの対応検査、実装トレースとの照合、テストケース生成、ドリフト検出の拡張。
-
-## **11. MVPの受け入れ基準**
-
-v0.1は以下が成立した時点で完了とみなす。
-
-- 既存Surv IR v1.1のプロジェクトをそのまま読み込める。
-- `.behavior.toml` から状態変数、初期状態、Action、Invariantを解析できる。
-- 型違反、未定義変数、未解決のSurv参照を検出できる。
-- 遷移の有効・無効をGuardに従って正しく判定できる。
-- 複数Actionの非決定的な分岐を探索できる。
-- すべての到達可能状態でInvariantを評価できる。
-- 違反が発生した場合に再現可能な反例を出力できる。
-- 探索資源制限に達した場合に`PASS`を返さない。
-- 終端状態と意図しないデッドロックを区別できる。
-- 正常モデルと異常モデルの両方で自動テストが通る。
-
-## **12. 仕様確定前に解決すべき設計問題**
-
-ここまでの要件から、実装前に決めるべき論点がいくつかある。
-
-### **12.1 状態変数をどこまでSchemaに結びつけるか**
-
-現在の提案では、
-
-```
-[behavior.order.vars]
-status = "enum(pending, paid, cancelled)"
+  Step 2 --[action.pay (ref: func.processPayment)]--> State 2:
+    order_status  = 'paid'
+    payment_count = 2   <-- violates: payment_count <= 1
 ```
 
-のように独立して定義する。
+---
 
-しかし既存の `schema.Order` にも `status` フィールドがあるなら、二重定義となる可能性がある。
+## 9. 非機能要件
 
-ここでは、**Schemaは値の構造、State Variableは時間変化する値**と分離した上で、型の再利用を可能にするのがよい。
+| 分類 | 要件 |
+| :--- | :--- |
+| **互換性** | 既存の Surv IR v1.1 ファイル・コマンドを一切破壊しない |
+| **可読性** | 標準 TOML v1.0 構文に準拠し、人間と LLM の双方が容易に読み書きできる |
+| **決定性** | 同一モデル・同一設定に対して常に同一の探索結果と最短反例を再現する |
+| **安全性** | 式評価器は純粋な AST 評価のみを行い、任意のコード実行や I/O を行わない |
+| **資源保護** | `max_states` / `max_depth` により無限ループやメモリ枯渇を確実に防止する |
+| **診断性** | エラーおよび反例には対象 Behavior 名、Action 名、関連 `func.*`、違反式を明示する |
 
-### **12.2 実装関数の粒度とActionの粒度**
+---
 
-SurvのFuncが大きな処理単位を表している場合、それを単一の原子的Actionに対応させると、内部の並行性や中間状態が消えてしまう。
+## 10. 開発フェーズ
 
-例えば決済処理は次のように分解できる。
+- **Phase 1 — Behavior Core（v0.1 / MVP）**
+  - `.behavior.toml` パーサ、式言語パーサ＆型検査器、Surv IR シンボル解決連携
+  - 内部 BFS 状態空間探索器（Invariant 検査、Terminal 対応 Deadlock 検査、有界 `int` 範囲検査）
+  - `surc check` での静的検証と `surc verify` コマンドによる反例トレース出力（Text / JSON）
+- **Phase 2 — Formal Verification & Liveness（v0.2）**
+  - TLA+ コード生成（`surc codegen tla+`）と TLC / Apalache 連携
+  - Liveness（`eventually`, `leads_to`）と Fairness（`wf`, `sf`）の導入
+- **Phase 3 — Multi-Behavior Composition（v0.3）**
+  - 複数 Behavior の並行合成、共有状態・メッセージチャネル、障害注入モデル
+- **Phase 4 — Refinement & Trace Checking（v0.4+）**
+  - 抽象モデルと詳細モデルの Refinement 検証、実装ログ・テストケース生成との連携
 
-```
-paymentRequested
-       ↓
-paymentAuthorized
-       ↓
-paymentCaptured
-       ↓
-paymentRecorded
-```
+---
 
-このどこを原子的な境界とみなすかは、モデルの重要な設計判断となる。
+## 11. MVP（v0.1）受け入れ基準
 
-### **12.3 Pipelineの意味論を変更する必要があるか**
+v0.1 は以下がすべて成立した時点で完了とみなす：
 
-私は**既存のPipelineには手を加えない**方針を提案する。
+1. 既存 Surv IR v1.1 のプロジェクト・単一ファイルを無変更で読み込める。
+2. `.behavior.toml` から `vars`、`init`、`action`（`guard` / `update`）、`invariant`、`terminal`、`check` を解析できる。
+3. 型違反、未定義変数、不正な Enum 列挙子、未解決の `mod.*` / `func.*` 参照を静的に検出できる。
+4. 複数の Action が同時に有効な状態で、非決定的な分岐を BFS で網羅探索できる。
+5. すべての到達可能状態で Invariant を評価し、違反時に最短の反例トレースを出力できる。
+6. `terminal` 条件を満たす終了状態と、意図しないデッドロック状態を区別して検出できる。
+7. `max_states` / `max_depth` の資源制限に達した場合に `PASS` ではなく `UNKNOWN` を返す。
+8. 壊れた `surv.toml` や `.behavior.toml` 構文エラー時に、正規化モデルを構築せず BFS をバイパスして `ERROR` レポートを返せる。
+9. 同一深さ $d$ における状態違反（長さ $d$）と遷移時の範囲外オーバーフロー試行（長さ $d+1$）が共存する回帰テストで、常に短い方（長さ $d$）の反例が返される。
+10. 正常モデル（`PASS`）と異常モデル（`FAIL`: Invariant 違反 / Deadlock / Overflow、`ERROR`: 静的診断）の自動テストが揃っている。
 
-Pipelineは設計上の処理フローを示し、Behaviorは実際に許された状態遷移を示す。
+---
 
-両者の整合性を確認する機能は将来追加できるが、初期版でPipelineから自動的に状態遷移を導出しない。
+## 12. 設計上の確定事項・トレードオフ
 
-### **12.4 TOML構文の制約**
+1. **状態変数と Schema の関係**
+   - `Schema` はデータ構造、`State Variable` は時間変化する検証用の抽象状態として分離する。初期版では `[behavior.<name>.vars]` で明示的に有界型（`bool`, `enum`, `int(min..max)`）を宣言する方式を基本とする。
+2. **Pipeline と Behavior の分離**
+   - Structural IR の `pipeline` は変更しない。`pipeline` はモジュール内の基本処理フローを示し、`behavior` はガードと状態更新による許容遷移全体を定義する。
+3. **標準 TOML v1.0 構文の遵守**
+   - トップレベルの `package` / `namespace` / `import` は最初の `[section]` より前に記述する。
+   - `update` は 1行インラインテーブル `update = { k = "v" }` またはサブテーブル `[behavior.<name>.action.<act>.update]` の両方を受理し、標準 TOML パーサでエラーにならない構文とする。
 
-TOMLでは `[section]` を開始した後、後続のキーはそのセクションに属する。したがって、既存Surv IRの説明にある `import` や `require` も、トップレベルに置く場合は最初のテーブル宣言より前に記述する必要がある。
+---
 
-さらに、本提案で示した次の複数行形式はTOMLとして不正になる。
+## 13. 総括とアーキテクチャ方針
 
-```
-update = {
-  order_status = "'paid'",
-  payment_count = "payment_count + 1"
-}
-```
+Behavior IR を単なる「状態遷移図の描画用ファイル」に留めるのではなく、**「反例を機械的に発見できる実行可能な形式仕様」** として位置付ける。
 
-正式仕様では、例えば次のようにする。
+これにより、Surv プロジェクト全体のアーキテクチャ記述は次の3層で完結する：
 
-```
-[behavior.order.action.pay.update]
-order_status = "'paid'"
-payment_count = "payment_count + 1"
-```
+$$\text{Surv Project} = \text{Structure (Surv IR)} + \text{Behavior (Behavior IR)} + \text{Deployment (Deploy IR)}$$
 
-この形式なら通常のTOMLパーサーで問題なく解析できる。
-
-## **13. 最終的な設計判断**
-
-ここで一つ、Behavior IRの将来を左右する選択がある。
-
-**Behavior IRを「状態機械の定義ファイル」に留めるか、それとも「実行可能な形式仕様」にするか。**
-
-私の提案は後者である。
-
-単に状態名と遷移を列挙するだけなら、既存のState Machine DSLや状態遷移図とあまり変わらない。
-
-しかし、状態変数、遷移関係、初期状態、不変条件に形式意味論を与えれば、Behavior IRは、設計者が記述したシステムの振る舞いについて機械的に反例を発見できる言語になる。
-
-そのうえで、Surv IR全体の構造は次のように整理できる。
-
-\\[ \boxed{ \text{Surv Project} = \text{Structure} + \text{Behavior} + \text{Verification} } \\]
-
-これは仕様としての構成であって、各層の整合性が自動的に証明されるという意味ではない。
-
-さらに長期的には、**Behavior IRをTLA+の単なるフロントエンドにするのではなく、Surv独自の意味論を持つ中間表現として確立する**ことを推奨する。
-
-そうすることで、TLA+だけでなく、SMTソルバー、テストケース生成器、シミュレーター、実装トレース解析器など、複数のバックエンドへ展開できる。
-
-最初の実装目標としては、**小規模な状態遷移系をTOMLで記述し、**`surc verify`**&#x20;によって不変条件の反例を発見できること**が最も適切だと考える。これだけで、既存のStructural IRとは明確に異なる実用価値を実証できる。
+最初の実装目標（Phase 1）は、**外部ツール不要で `.behavior.toml` を `surc check` / `surc verify` にかけるだけで、並行バグやガード漏れによる Invariant 違反・デッドロックの最短反例トレースが手元で即座に得られること**である。

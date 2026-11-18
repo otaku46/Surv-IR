@@ -1,36 +1,68 @@
 surv_file ::= header* section*
 
-header ::= namespace_decl
+header ::= package_decl
+         | namespace_decl
          | import_decl
          | require_decl
 
+package_decl   ::= "package" "=" STRING
 namespace_decl ::= "namespace" "=" STRING
+import_decl    ::= "import" "=" array
+require_decl   ::= "require" "=" array
+                 | "requires" "=" array
 
-import_decl ::= "import" "=" array
-
-require_decl ::= "require" "=" array
-               | "requires" "=" array
-
-section ::= mod_section
-          | func_section
+section ::= meta_section
           | schema_section
-          | pipeline_section
+          | func_section
+          | mod_section
+          | status_section
 
-mod_section ::= "[mod." IDENT "]" mod_body
-mod_body ::= kv_pair*
-
-func_section ::= "[func." IDENT "]" func_body
-func_body ::= kv_pair*
+meta_section ::= "[meta]" { name | version | description }
+name ::= "name" "=" STRING
+version ::= "version" "=" STRING
+description ::= "description" "=" STRING
 
 schema_section ::= "[schema." IDENT "]" schema_body
-schema_body ::= kv_pair*
+schema_body ::= kind role type from to base label fields over impl
 
-pipeline_section ::= "[pipeline." IDENT "]" pipeline_body
-pipeline_body ::= kv_pair*
+func_section ::= "[func." IDENT "]" func_body
+func_body ::= intent input output design_notes impl
 
-kv_pair ::= KEY "=" value
+mod_section ::= "[mod." IDENT "]" mod_body
+mod_body ::= purpose submods schemas funcs pipeline boundary
+           | "[mod." IDENT "." IDENT "]" mod_body   ; nested submodule
+
+status_section ::= "[status]" status_body
+status_body ::= updated_at | "[status.mod." IDENT "]" module_status
+module_status ::= state | coverage | notes | "[status.mod." IDENT "." IDENT "]" module_status
+
+kind ::= "kind" "=" STRING
+role ::= "role" "=" STRING
+type ::= "type" "=" STRING
+from ::= "from" "=" STRING
+to ::= "to" "=" STRING
+base ::= "base" "=" STRING
+label ::= "label" "=" STRING
+intent ::= "intent" "=" STRING
+design_notes ::= "design_notes" "=" STRING
+purpose ::= "purpose" "=" STRING
+updated_at ::= "updated_at" "=" STRING
+state ::= "state" "=" STRING
+coverage ::= "coverage" "=" NUMBER
+notes ::= "notes" "=" STRING
+
+fields ::= "fields" "=" object
+over ::= "over" "=" array
+input ::= "input" "=" array
+output ::= "output" "=" array
+submods ::= "submods" "=" array
+schemas ::= "schemas" "=" array
+funcs ::= "funcs" "=" array
+pipeline ::= "pipeline" "=" array
+boundary ::= "boundary" "=" object
+impl ::= "impl." ("bind" | "lang" | "path") "=" STRING
+
 value ::= STRING | array | object | number | bool
-
 array ::= "[" (value ("," value)*)? "]"
 object ::= "{" (key_value ("," key_value)*)? "}"
-key_value ::= KEY ":" value
+key_value ::= KEY "=" value

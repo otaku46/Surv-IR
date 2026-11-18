@@ -40,8 +40,11 @@ impl std::error::Error for ParseError {
 }
 
 pub fn parse_surv_file<R: Read>(reader: R) -> Result<SurvFile, ParseError> {
-    let raw = parse_toml(BufReader::new(reader))?;
+    parse_surv_table(parse_toml(BufReader::new(reader))?)
+}
 
+pub(crate) fn parse_surv_table(raw: TomlTable) -> Result<SurvFile, ParseError> {
+    validate_surv_table(&raw)?;
     let package = parse_optional_header_string(&raw, "package")?;
     let namespace = parse_optional_header_string(&raw, "namespace")?;
     let imports = parse_imports(&raw)?;
@@ -55,6 +58,302 @@ pub fn parse_surv_file<R: Read>(reader: R) -> Result<SurvFile, ParseError> {
         requires,
         sections,
     })
+}
+
+fn invalid(msg: impl Into<String>) -> ParseError {
+    ParseError::InvalidHeader(msg.into())
+}
+
+fn expect_table<'a>(value: &'a TomlValue, label: &str) -> Result<&'a TomlTable, ParseError> {
+    value
+        .as_table()
+        .ok_or_else(|| invalid(format!("{label} must be a table")))
+}
+
+fn expect_string(value: &TomlValue, label: &str) -> Result<String, ParseError> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| invalid(format!("{label} must be a string")))
+}
+
+fn expect_string_array(value: &TomlValue, label: &str) -> Result<(), ParseError> {
+    match value {
+        TomlValue::Array(items) => {
+            if items.iter().all(|item| item.as_str().is_some()) {
+                Ok(())
+            } else {
+                Err(invalid(format!("{label} entries must be strings")))
+            }
+        }
+        TomlValue::String(_) => Ok(()),
+        _ => Err(invalid(format!("{label} must be a string array"))),
+    }
+}
+
+fn expect_pipeline(value: &TomlValue, label: &str) -> Result<(), ParseError> {
+    match value {
+        TomlValue::String(_) => Ok(()),
+        TomlValue::Table(_) => Ok(()),
+        TomlValue::Array(items) => {
+            for item in items {
+                expect_pipeline(item, label)?;
+            }
+            Ok(())
+        }
+        _ => Err(invalid(format!("{label} must be a pipeline array"))),
+    }
+}
+
+fn validate_surv_table(raw: &TomlTable) -> Result<(), ParseError> {
+    for (key, value) in raw {
+        match key.as_str() {
+            "package" | "namespace" => {
+                expect_string(value, key)?;
+            }
+            "import" | "require" | "requires" => {
+                expect_string_array(value, key)?;
+            }
+            "meta" => validate_meta(expect_table(value, "meta")?)?,
+            "schema" => {
+                let table = expect_table(value, "schema")?;
+                for (name, value) in table {
+                    validate_schema(name, expect_table(value, &format!("schema.{name}"))?)?;
+                }
+            }
+            "func" => {
+                let table = expect_table(value, "func")?;
+                for (name, value) in table {
+                    validate_func(name, expect_table(value, &format!("func.{name}"))?)?;
+                }
+            }
+            "mod" => {
+                let table = expect_table(value, "mod")?;
+                for (name, value) in table {
+                    validate_mod(name, expect_table(value, &format!("mod.{name}"))?)?;
+                }
+            }
+            "status" => validate_status(expect_table(value, "status")?)?,
+            other => return Err(invalid(format!("unknown top-level key '{other}'"))),
+        }
+    }
+    Ok(())
+}
+
+fn validate_meta(table: &TomlTable) -> Result<(), ParseError> {
+    for (key, value) in table {
+        match key.as_str() {
+            "name" | "version" | "description" => {
+                expect_string(value, &format!("meta.{key}"))?;
+            }
+            other => return Err(invalid(format!("unknown meta key '{other}'"))),
+        }
+    }
+    Ok(())
+}
+
+fn validate_impl(table: &TomlTable, label: &str) -> Result<(), ParseError> {
+    for (key, value) in table {
+        match key.as_str() {
+            "bind" | "lang" | "path" => {
+                expect_string(value, &format!("{label}.impl.{key}"))?;
+            }
+            other => return Err(invalid(format!("unknown impl key '{other}'"))),
+        }
+    }
+    Ok(())
+}
+
+fn validate_schema(name: &str, table: &TomlTable) -> Result<(), ParseError> {
+    let label = format!("schema.{name}");
+    for (key, value) in table {
+        match key.as_str() {
+            "kind" | "role" | "type" | "from" | "to" | "base" | "label" => {
+                expect_string(value, &format!("{label}.{key}"))?;
+            }
+            "fields" => {
+                let fields = expect_table(value, &format!("{label}.fields"))?;
+                for (field, field_type) in fields {
+                    expect_string(field_type, &format!("{label}.fields.{field}"))?;
+                }
+            }
+            "over" => expect_string_array(value, &format!("{label}.over"))?,
+            "impl" => validate_impl(expect_table(value, &format!("{label}.impl"))?, &label)?,
+            key if key.starts_with("impl.") => {
+                expect_string(value, &format!("{label}.{key}"))?;
+            }
+            other => return Err(invalid(format!("unknown schema key '{other}' in {label}"))),
+        }
+    }
+
+    let kind = table
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| invalid(format!("{label} requires a string 'kind'")))?;
+    match kind {
+        "node" | "edge" | "boundary" | "value" | "space" => {}
+        other => return Err(invalid(format!("{label}: unknown kind '{other}'"))),
+    }
+    match kind {
+        "edge" => {
+            for required in ["from", "to"] {
+                let value = table
+                    .get(required)
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if value.trim().is_empty() {
+                    return Err(invalid(format!("{label}: edge requires '{required}'")));
+                }
+            }
+        }
+        "boundary" => {
+            let has_over = match table.get("over") {
+                Some(TomlValue::Array(items)) => !items.is_empty(),
+                Some(TomlValue::String(value)) => !value.trim().is_empty(),
+                _ => false,
+            };
+            if !has_over {
+                return Err(invalid(format!("{label}: boundary requires 'over'")));
+            }
+        }
+        "value" => {
+            let has_type = table
+                .get("type")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| !value.trim().is_empty());
+            let has_fields = table
+                .get("fields")
+                .and_then(|value| value.as_table())
+                .is_some_and(|fields| !fields.is_empty());
+            if !has_type && !has_fields {
+                return Err(invalid(format!(
+                    "{label}: value requires 'type' or 'fields'"
+                )));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_func(name: &str, table: &TomlTable) -> Result<(), ParseError> {
+    let label = format!("func.{name}");
+    for (key, value) in table {
+        match key.as_str() {
+            "intent" | "design_notes" => {
+                expect_string(value, &format!("{label}.{key}"))?;
+            }
+            "input" | "output" => expect_string_array(value, &format!("{label}.{key}"))?,
+            "impl" => validate_impl(expect_table(value, &format!("{label}.impl"))?, &label)?,
+            key if key.starts_with("impl.") => {
+                expect_string(value, &format!("{label}.{key}"))?;
+            }
+            other => return Err(invalid(format!("unknown func key '{other}' in {label}"))),
+        }
+    }
+    Ok(())
+}
+
+fn validate_mod(name: &str, table: &TomlTable) -> Result<(), ParseError> {
+    let label = format!("mod.{name}");
+    for (key, value) in table {
+        match key.as_str() {
+            "purpose" => {
+                expect_string(value, &format!("{label}.purpose"))?;
+            }
+            "pipeline" => {
+                expect_pipeline(value, &format!("{label}.pipeline"))?;
+            }
+            "schemas" | "funcs" | "submods" => {
+                expect_string_array(value, &format!("{label}.{key}"))?;
+            }
+            "boundary" => {
+                let boundary = expect_table(value, &format!("{label}.boundary"))?;
+                for (boundary_key, entries) in boundary {
+                    expect_string_array(entries, &format!("{label}.boundary.{boundary_key}"))?;
+                }
+            }
+            other => {
+                if let Some(child) = value.as_table() {
+                    if other == "impl" {
+                        return Err(invalid(format!("unknown mod key 'impl' in {label}")));
+                    }
+                    validate_mod(&format!("{name}.{other}"), child)?;
+                } else {
+                    return Err(invalid(format!("unknown mod key '{other}' in {label}")));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_status(table: &TomlTable) -> Result<(), ParseError> {
+    for (key, value) in table {
+        match key.as_str() {
+            "updated_at" => {
+                expect_string(value, "status.updated_at")?;
+            }
+            "mod" => validate_status_modules("", expect_table(value, "status.mod")?)?,
+            other => return Err(invalid(format!("unknown status key '{other}'"))),
+        }
+    }
+    Ok(())
+}
+
+fn validate_status_modules(parent: &str, table: &TomlTable) -> Result<(), ParseError> {
+    for (name, value) in table {
+        let status = expect_table(value, &format!("status.mod.{name}"))?;
+        let full_name = if parent.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent}.{name}")
+        };
+        validate_status_module(&full_name, status)?;
+    }
+    Ok(())
+}
+
+fn validate_status_module(full_name: &str, status: &TomlTable) -> Result<(), ParseError> {
+    for (key, value) in status {
+        if let Some(child) = value.as_table() {
+            validate_status_module(&format!("{full_name}.{key}"), child)?;
+            continue;
+        }
+        match key.as_str() {
+            "state" => {
+                let state = expect_string(value, &format!("status.mod.{full_name}.state"))?;
+                if !matches!(
+                    state.as_str(),
+                    "todo" | "skeleton" | "partial" | "done" | "blocked"
+                ) {
+                    return Err(invalid(format!(
+                        "status.mod.{full_name}: unknown state '{state}'"
+                    )));
+                }
+            }
+            "coverage" => {
+                let raw = expect_string(value, &format!("status.mod.{full_name}.coverage"))?;
+                let coverage = raw.parse::<f64>().map_err(|_| {
+                    invalid(format!("status.mod.{full_name}: coverage must be a number"))
+                })?;
+                if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
+                    return Err(invalid(format!(
+                        "status.mod.{full_name}: coverage must be between 0.0 and 1.0"
+                    )));
+                }
+            }
+            "notes" => {
+                expect_string(value, &format!("status.mod.{full_name}.notes"))?;
+            }
+            other => {
+                return Err(invalid(format!(
+                    "unknown status key '{other}' in status.mod.{full_name}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_surv_ir<R: Read>(reader: R) -> Result<SurvFile, ParseError> {
@@ -105,9 +404,9 @@ fn parse_requires(raw: &TomlTable) -> Result<Vec<RequireDecl>, ParseError> {
         result.extend(parse_string_array("requires", value)?);
     }
     for entry in &result {
-        if !entry.starts_with("mod.") {
+        if !entry.starts_with("mod.") && !entry.contains(".mod.") {
             return Err(ParseError::InvalidHeader(format!(
-                "require entry '{}' must start with 'mod.'",
+                "require entry '{}' must reference a module",
                 entry
             )));
         }
@@ -183,6 +482,7 @@ fn parse_mod_tree(parent_path: &str, table: &TomlTable, sections: &mut Vec<Secti
             || key == "funcs"
             || key == "pipeline"
             || key == "submods"
+            || key == "boundary"
         {
             continue;
         }
@@ -231,9 +531,9 @@ fn parse_schema_section(name: &str, table: &TomlTable) -> SchemaSection {
         label: get_string(table, "label"),
         fields,
         over: parse_string_set(table, "over"),
-        impl_bind: get_optional_string(table, "impl.bind"),
-        impl_lang: get_optional_string(table, "impl.lang"),
-        impl_path: get_optional_string(table, "impl.path"),
+        impl_bind: get_impl_optional_string(table, "bind"),
+        impl_lang: get_impl_optional_string(table, "lang"),
+        impl_path: get_impl_optional_string(table, "path"),
     }
 }
 
@@ -244,9 +544,9 @@ fn parse_func_section(name: &str, table: &TomlTable) -> FuncSection {
         input: parse_string_set(table, "input"),
         output: parse_string_set(table, "output"),
         design_notes: get_string(table, "design_notes"),
-        impl_bind: get_optional_string(table, "impl.bind"),
-        impl_lang: get_optional_string(table, "impl.lang"),
-        impl_path: get_optional_string(table, "impl.path"),
+        impl_bind: get_impl_optional_string(table, "bind"),
+        impl_lang: get_impl_optional_string(table, "lang"),
+        impl_path: get_impl_optional_string(table, "path"),
     }
 }
 
@@ -258,6 +558,14 @@ fn parse_mod_section(name: &str, table: &TomlTable) -> ModSection {
         funcs: parse_string_set(table, "funcs"),
         pipeline: parse_pipeline(table, "pipeline"),
         submods: parse_string_set(table, "submods"),
+        boundary: get_table(table, "boundary")
+            .into_iter()
+            .flat_map(|boundary| {
+                boundary
+                    .keys()
+                    .map(|key| (key.clone(), parse_string_set(boundary, key)))
+            })
+            .collect(),
     }
 }
 
@@ -275,6 +583,12 @@ fn get_optional_string(table: &TomlTable, key: &str) -> Option<String> {
         .and_then(|value| value.as_str())
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn get_impl_optional_string(table: &TomlTable, key: &str) -> Option<String> {
+    get_optional_string(table, &format!("impl.{key}")).or_else(|| {
+        get_table(table, "impl").and_then(|impl_table| get_optional_string(impl_table, key))
+    })
 }
 
 fn parse_string_set(table: &TomlTable, key: &str) -> Vec<String> {
@@ -518,30 +832,47 @@ fn parse_status_section(table: &TomlTable) -> StatusSection {
     let updated_at = get_string(table, "updated_at");
     let mut modules = BTreeMap::new();
 
-    // Parse [status.mod] table which contains module statuses
-    if let Some(TomlValue::Table(mod_table)) = table.get("mod") {
-        for (module_name, value) in mod_table {
-            if let TomlValue::Table(mod_status_table) = value {
-                let state = get_string(mod_status_table, "state");
-                let coverage = get_f64(mod_status_table, "coverage");
-                let notes = get_string(mod_status_table, "notes");
-
-                modules.insert(
-                    module_name.clone(),
-                    ModuleStatus {
-                        state,
-                        coverage,
-                        notes,
-                    },
-                );
-            }
-        }
+    if let Some(mod_table) = get_table(table, "mod") {
+        parse_module_statuses("", mod_table, &mut modules);
     }
 
     StatusSection {
         name: "status".to_string(),
         updated_at,
         modules,
+    }
+}
+
+fn parse_module_statuses(
+    parent: &str,
+    table: &TomlTable,
+    modules: &mut BTreeMap<String, ModuleStatus>,
+) {
+    for (name, value) in table {
+        let Some(status) = value.as_table() else {
+            continue;
+        };
+        let name = if parent.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent}.{name}")
+        };
+        let has_leaf_value = ["state", "coverage", "notes"].iter().any(|key| {
+            status
+                .get(*key)
+                .is_some_and(|value| !matches!(value, TomlValue::Table(_)))
+        });
+        if status.is_empty() || has_leaf_value {
+            modules.insert(
+                name.clone(),
+                ModuleStatus {
+                    state: get_string(status, "state"),
+                    coverage: get_f64(status, "coverage"),
+                    notes: get_string(status, "notes"),
+                },
+            );
+        }
+        parse_module_statuses(&name, status, modules);
     }
 }
 

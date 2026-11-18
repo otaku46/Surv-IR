@@ -342,11 +342,11 @@ schemas = ["schema.X"]  # Add here
 funcs = ["func.X"]
 ```
 
-### Error: "Reference not found: schema.Y"
+### Error: "Reference 'schema.Y' is undefined"
 
 **Cause:** Typo or missing schema definition.
 
-**Fix:** Check spelling or add the schema:
+**Fix:** Check spelling or add the schema (with the required `kind`):
 ```toml
 [schema.Y]
 kind = "node"
@@ -354,9 +354,9 @@ role = "entity"
 fields = {...}
 ```
 
-### Error: "Circular dependency detected"
+### Error: "Require cycle detected"
 
-**Cause:** Module depends on itself (directly or indirectly).
+**Cause:** Module depends on itself (directly or indirectly) through `require`.
 
 **Fix:** Restructure dependencies to break the cycle.
 
@@ -451,10 +451,10 @@ surc status set mod.user_api design.toml --state partial --coverage 0.5
    surc status set mod.user_api design.toml --state partial
    ```
 
-4. **Verify alignment** (future: use `surc diff-impl`)
+4. **Verify alignment**
    ```bash
    # Check drift between IR and code
-   surc diff-impl design.toml ./src --mod user_api
+   surc diff design.toml ./src --mod user_api
    ```
 
 ### Workflow 2: Code-First (Reverse Engineering)

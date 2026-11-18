@@ -7,6 +7,10 @@ kind = "node"
 role = "view"
 fields = {user_id = "uuid", display_name = "string"}
 
+[schema.UI]
+kind = "node"
+fields = { users = "schema.UserView[]" }
+
 [func.renderUserList]
 intent = "Render user list UI"
 input = ["schema.UserView"]

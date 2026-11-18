@@ -1,0 +1,500 @@
+# Surv IR Design for Behavior IR Engine (based on behavior.md v0.1)
+
+[meta]
+name = "surv_behavior_engine"
+version = "0.1.0"
+description = "Architecture of the Surv Behavior IR parser, semantic type checker, level-synchronous BFS model explorer, and TLA+ backend"
+
+# ============================================================================
+# SCHEMAS: Shared Surv Project & Name Resolution Context (1:1 with Rust types)
+# ============================================================================
+
+[schema.BehaviorSource]
+kind = "node"
+role = "request"
+fields = { path = "PathBuf", content = "String", manifest_path = "Option<PathBuf>" }
+impl.lang = "rust"
+impl.path = "behavior::loader"
+
+[schema.ProjectSection]
+kind = "node"
+role = "config"
+fields = { name = "String" }
+impl.bind = "ProjectSection"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.PathsSection]
+kind = "node"
+role = "config"
+fields = { ir_root = "String" }
+impl.bind = "PathsSection"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.PackageSection]
+kind = "node"
+role = "config"
+fields = { root = "String", namespace = "Option<String>", depends = "Vec<String>" }
+impl.bind = "PackageSection"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.Manifest]
+kind = "node"
+role = "config"
+fields = { project = "ProjectSection", paths = "PathsSection", description = "Option<String>", files = "HashMap<String, FileEntry>", packages = "HashMap<String, PackageSection>" }
+impl.bind = "Manifest"
+impl.lang = "rust"
+impl.path = "manifest"
+
+[schema.BehaviorVerificationConfig]
+kind = "node"
+role = "config"
+fields = { behavior_root = "Option<PathBuf>", default_backend = "String", default_max_states = "usize", default_max_depth = "usize" }
+impl.lang = "rust"
+impl.path = "behavior::loader"
+
+[schema.SymbolEntry]
+kind = "node"
+role = "value"
+fields = { kind = "SymbolKind", package = "String", fq_name = "String", local_name = "String", namespace = "Option<String>", file = "PathBuf" }
+impl.bind = "SymbolEntry"
+impl.lang = "rust"
+impl.path = "symbol"
+
+[schema.SymbolTable]
+kind = "node"
+role = "context"
+fields = { entries = "Vec<SymbolEntry>" }
+impl.bind = "SymbolTable"
+impl.lang = "rust"
+impl.path = "symbol"
+
+[schema.ImportEntry]
+kind = "node"
+role = "value"
+fields = { package = "String", alias = "Option<String>" }
+impl.bind = "ImportEntry"
+impl.lang = "rust"
+impl.path = "imports"
+
+[schema.FileImportContext]
+kind = "node"
+role = "context"
+fields = { file_path = "PathBuf", self_package = "String", namespace = "Option<String>", imports = "Vec<ImportEntry>" }
+impl.bind = "FileImportContext"
+impl.lang = "rust"
+impl.path = "imports"
+
+[schema.ProjectContext]
+kind = "node"
+role = "context"
+fields = { manifest = "Option<Manifest>", verification = "BehaviorVerificationConfig", project_ast_loaded = "bool", symbol_table = "SymbolTable", manifest_path = "Option<PathBuf>", diagnostics = "Vec<BehaviorDiagnostic>" }
+impl.lang = "rust"
+impl.path = "behavior::loader"
+
+# ============================================================================
+# SCHEMAS: Frontend AST, Typed Semantic IR & Frontend Outcome
+# ============================================================================
+
+[schema.BehaviorFileAST]
+kind = "node"
+role = "entity"
+fields = { package = "Option<String>", namespace = "Option<String>", imports = "Vec<String>", raw_behaviors = "BTreeMap<String, RawBehavior>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.ExprAST]
+kind = "node"
+role = "value"
+label = "Recursive Rust enum for literals, references, unary/binary operations, membership and conditionals"
+impl.lang = "rust"
+impl.path = "behavior::expr"
+
+[schema.BehaviorDiagnostic]
+kind = "node"
+role = "diagnostic"
+fields = { code = "String", severity = "String", message = "String", location = "String", related_symbol = "Option<String>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.StateDomain]
+kind = "node"
+role = "value"
+fields = { var_name = "String", domain_kind = "&'static str", variants = "Vec<String>", min_val = "Option<i128>", max_val = "Option<i128>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.TypedExpr]
+kind = "node"
+role = "value"
+fields = { ast = "ExprAST", result_type = "ExprType" }
+impl.lang = "rust"
+impl.path = "behavior::expr"
+
+[schema.StateAssignment]
+kind = "node"
+role = "value"
+fields = { target_var = "String", value_expr = "TypedExpr" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.NormalizedAction]
+kind = "node"
+role = "entity"
+fields = { name = "String", surv_func_refs = "Vec<String>", resolved_func_fqns = "Vec<String>", guard = "Option<TypedExpr>", updates = "Vec<StateAssignment>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.NormalizedInvariant]
+kind = "node"
+role = "entity"
+fields = { name = "String", expr = "TypedExpr", severity = "String", source = "String" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.ExplorerConfig]
+kind = "node"
+role = "config"
+fields = { max_states = "usize", max_depth = "usize", check_deadlock = "bool" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.NormalizedBehaviorModel]
+kind = "node"
+role = "context"
+fields = { name = "String", description = "Option<String>", owner_mod = "Option<String>", resolved_owner_fqn = "Option<String>", domains = "Vec<StateDomain>", init_assignments = "Vec<StateAssignment>", actions = "Vec<NormalizedAction>", invariants = "Vec<NormalizedInvariant>", terminal = "Option<TypedExpr>", config = "ExplorerConfig" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.ParsedExpressions]
+kind = "node"
+role = "value"
+fields = { models = "BTreeMap<String, BTreeMap<Vec<String>, ExprAST>>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.SemanticDraft]
+kind = "node"
+role = "value"
+fields = { model = "NormalizedBehaviorModel", diagnostics = "Vec<BehaviorDiagnostic>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[schema.FrontendOutcome]
+kind = "node"
+role = "response"
+fields = { target_name = "String", has_errors = "bool", model = "Option<NormalizedBehaviorModel>", diagnostics = "Vec<BehaviorDiagnostic>" }
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+# ============================================================================
+# SCHEMAS: Structured State Valuations, Transitions, Overflows & Reports
+# ============================================================================
+
+[schema.StateValue]
+kind = "value"
+role = "value"
+type = "StateValue"
+label = "Tagged Rust enum serialized as value_kind and one of bool_val, int_val or enum_val"
+impl.lang = "rust"
+impl.path = "behavior::expr"
+
+[schema.StateVarBinding]
+kind = "value"
+role = "value"
+fields = { var_name = "String", value = "StateValue" }
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[schema.ModelState]
+kind = "node"
+role = "value"
+fields = { state_id = "usize", depth = "usize", valuations = "Vec<StateVarBinding>", is_terminal = "bool" }
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[schema.TraceStep]
+kind = "edge"
+role = "event"
+from = "schema.ModelState"
+to = "schema.ModelState"
+fields = { step_index = "usize", action_name = "String", surv_func_refs = "Vec<String>", from_state = "ModelState", to_state = "ModelState" }
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[schema.OverflowAttempt]
+kind = "node"
+role = "diagnostic"
+fields = { step_index = "usize", from_state = "ModelState", action_name = "String", surv_func_refs = "Vec<String>", target_var = "String", attempted_value = "i128", min_bound = "i128", max_bound = "i128" }
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[schema.CounterexampleTrace]
+kind = "node"
+role = "diagnostic"
+fields = { violation_kind = "&'static str", violated_name = "String", violated_expr = "String", initial_state = "ModelState", steps = "Vec<TraceStep>", violated_state = "Option<ModelState>", overflow_attempt = "Option<OverflowAttempt>" }
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[schema.ExplorationOutcome]
+kind = "node"
+role = "response"
+fields = { behavior_name = "String", stop_reason = "&'static str", explored_states = "usize", pending_states = "usize", max_depth_reached = "usize", counterexample = "Option<CounterexampleTrace>" }
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[schema.VerificationReport]
+kind = "node"
+role = "response"
+fields = { behavior_name = "String", status = "&'static str", stop_reason = "&'static str", explored_states = "usize", pending_states = "usize", max_depth_reached = "usize", diagnostics = "Vec<BehaviorDiagnostic>", trace = "Option<CounterexampleTrace>" }
+impl.lang = "rust"
+impl.path = "behavior::reporter"
+
+[schema.TlaPlusSpec]
+kind = "node"
+role = "response"
+fields = { module_name = "String", tla_source = "String", cfg_source = "String" }
+impl.lang = "rust"
+impl.path = "behavior::tla"
+
+# ============================================================================
+# FUNCTIONS
+# ============================================================================
+
+[func.loadProjectContext]
+intent = "Load surv.toml Manifest (ProjectSection, PathsSection, HashMap<String, PackageSection> with depends), BehaviorVerificationConfig, ProjectAST, and shared SymbolTable"
+input = ["schema.BehaviorSource"]
+output = ["schema.ProjectContext", "schema.BehaviorDiagnostic"]
+design_notes = "Reuses loader::load_manifest, loader::load_project, package::assign_packages_to_files, and symbol::build_symbol_table_with_packages; if surv.toml fails to parse, records error diagnostic so pipeline short-circuits via failOnProjectLoad"
+impl.bind = "load_behavior_project_context"
+impl.lang = "rust"
+impl.path = "behavior::loader"
+
+[func.failOnProjectLoad]
+intent = "Short-circuit frontend into an error FrontendOutcome (model = None) when surv.toml or project IR loading fails, without requiring BehaviorFileAST"
+input = ["schema.BehaviorSource", "schema.BehaviorDiagnostic"]
+output = ["schema.FrontendOutcome"]
+impl.bind = "fail_on_project_load"
+impl.lang = "rust"
+impl.path = "behavior"
+
+[func.parseBehaviorToml]
+intent = "Parse .behavior.toml into BehaviorFileAST and construct FileImportContext (self_package, namespace, ImportEntry aliases) against Manifest; record TOML syntax errors as BehaviorDiagnostics"
+input = ["schema.BehaviorSource", "schema.ProjectContext"]
+output = ["schema.BehaviorFileAST", "schema.FileImportContext", "schema.BehaviorDiagnostic"]
+design_notes = "If .behavior.toml has invalid TOML syntax or invalid header types, records error diagnostic so pipeline short-circuits via failOnTomlParse without constructing BehaviorFileAST"
+impl.bind = "parse_behavior_file"
+impl.lang = "rust"
+impl.path = "behavior::loader"
+
+[func.failOnTomlParse]
+intent = "Short-circuit frontend into an error FrontendOutcome (model = None) when .behavior.toml fails TOML/header parsing, without requiring BehaviorFileAST or ExprAST"
+input = ["schema.BehaviorSource", "schema.BehaviorDiagnostic"]
+output = ["schema.FrontendOutcome"]
+impl.bind = "fail_on_toml_parse"
+impl.lang = "rust"
+impl.path = "behavior"
+
+[func.parseExpressions]
+intent = "Parse all guard, update, invariant, and terminal strings across BehaviorFileAST into untyped ExprAST trees, collecting all syntax errors before branching"
+input = ["schema.BehaviorSource", "schema.BehaviorFileAST", "schema.BehaviorDiagnostic"]
+output = ["schema.ParsedExpressions", "schema.BehaviorDiagnostic"]
+design_notes = "Evaluates every expression string in BehaviorFileAST so multiple syntax errors (e.g. guard = 'x <') are reported together; if any expression fails to parse, short-circuits via failOnExprParse so checkTypesAndResolveRefs never receives incomplete ExprASTs"
+impl.bind = "parse_expressions"
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[func.failOnExprParse]
+intent = "Short-circuit frontend into an error FrontendOutcome (model = None) when any expression string fails syntax parsing, without invoking checkTypesAndResolveRefs"
+input = ["schema.BehaviorSource", "schema.BehaviorDiagnostic"]
+output = ["schema.FrontendOutcome"]
+impl.bind = "fail_on_expr_parse"
+impl.lang = "rust"
+impl.path = "behavior"
+
+[func.checkTypesAndResolveRefs]
+intent = "Type-check complete ExprAST trees and resolve owner mod.* and action func.* references via shared SymbolTable, FileImportContext, and Manifest.packages depends graph"
+input = ["schema.BehaviorFileAST", "schema.ParsedExpressions", "schema.ProjectContext", "schema.FileImportContext", "schema.BehaviorDiagnostic"]
+output = ["schema.SemanticDraft"]
+design_notes = "Guaranteed complete ExprAST inputs; delegates symbol lookup and undeclared-dependency checks (using Manifest.packages[self_package].depends) directly to symbol::reference_candidates and symbol::check_package_dependency"
+impl.bind = "check_behavior_semantics"
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[func.buildFrontendOutcome]
+intent = "Assemble FrontendOutcome from parsed AST and semantic check results: either validated NormalizedBehaviorModel + ExplorerConfig (has_errors = false) or semantic error diagnostics with model = None (has_errors = true)"
+input = ["schema.SemanticDraft"]
+output = ["schema.FrontendOutcome"]
+design_notes = "Reached only when project loading, TOML parsing, and expression syntax parsing all succeeded; if type/reference checking recorded any error diagnostic, sets has_errors = true and model = None"
+impl.bind = "build_frontend_outcome"
+impl.lang = "rust"
+impl.path = "behavior::model"
+
+[func.buildStaticErrorReport]
+intent = "Build status = ERROR VerificationReport directly from FrontendOutcome diagnostics without requiring NormalizedBehaviorModel or running BFS"
+input = ["schema.FrontendOutcome"]
+output = ["schema.VerificationReport"]
+impl.bind = "build_static_error_report"
+impl.lang = "rust"
+impl.path = "behavior::reporter"
+
+[func.exploreAndCheckBfs]
+intent = "Run level-synchronous two-phase BFS over reachable states, reporting out-of-bounds updates as OverflowAttempts"
+input = ["schema.FrontendOutcome"]
+output = ["schema.ExplorationOutcome"]
+design_notes = "v0.1 treats out-of-bounds updates strictly as overflow violations (never silent blocking; guard alone defines action enabledness). Two-phase per depth d: Phase A checks invariants and guard-enabledness deadlocks across all states at depth d (d-step violations) before Phase B evaluates enabled updates to depth d+1 and checks bounded-int overflows ((d+1)-step violations)"
+impl.bind = "explore_and_check_bfs"
+impl.lang = "rust"
+impl.path = "behavior::explorer"
+
+[func.buildVerificationReport]
+intent = "Map ExplorationOutcome and FrontendOutcome warnings into PASS (exhausted), FAIL (violation_found), or UNKNOWN (max_states/max_depth reached)"
+input = ["schema.FrontendOutcome", "schema.ExplorationOutcome"]
+output = ["schema.VerificationReport"]
+impl.bind = "build_verification_report"
+impl.lang = "rust"
+impl.path = "behavior::reporter"
+
+[func.generateTlaPlus]
+intent = "Translate validated NormalizedBehaviorModel into TLA+ (.tla) and TLC configuration (.cfg)"
+input = ["schema.NormalizedBehaviorModel"]
+output = ["schema.TlaPlusSpec"]
+impl.bind = "generate_tla_spec"
+impl.lang = "rust"
+impl.path = "behavior::tla"
+
+# ============================================================================
+# MODULES
+# ============================================================================
+
+[mod.behavior_engine]
+purpose = "End-to-end Behavior IR compilation, stage-by-stage static error short-circuiting, level-synchronous BFS model checking, and TLA+ codegen"
+submods = ["frontend", "explorer", "tla_backend"]
+schemas = [
+    "schema.BehaviorSource",
+    "schema.ProjectContext",
+    "schema.FrontendOutcome",
+    "schema.NormalizedBehaviorModel",
+    "schema.ExplorationOutcome",
+    "schema.VerificationReport",
+    "schema.TlaPlusSpec"
+]
+funcs = [
+    "func.loadProjectContext",
+    "func.failOnProjectLoad",
+    "func.parseBehaviorToml",
+    "func.failOnTomlParse",
+    "func.parseExpressions",
+    "func.failOnExprParse",
+    "func.checkTypesAndResolveRefs",
+    "func.buildFrontendOutcome",
+    "func.buildStaticErrorReport",
+    "func.exploreAndCheckBfs",
+    "func.buildVerificationReport"
+]
+pipeline = [
+    "func.loadProjectContext",
+    { branch = { condition = "project_load_failed", on_true = "func.failOnProjectLoad", on_false = [ "func.parseBehaviorToml", { branch = { condition = "toml_parse_failed", on_true = "func.failOnTomlParse", on_false = [ "func.parseExpressions", { branch = { condition = "expr_parse_failed", on_true = "func.failOnExprParse", on_false = "func.checkTypesAndResolveRefs -> func.buildFrontendOutcome" } } ] } } ] } },
+    { branch = { condition = "frontend_has_errors", on_true = "func.buildStaticErrorReport", on_false = "func.exploreAndCheckBfs -> func.buildVerificationReport" } }
+]
+
+[mod.behavior_engine.frontend]
+purpose = "Load shared ProjectContext (Manifest + SymbolTable), parse .behavior.toml and expressions with stage-by-stage early-exit error branches, type-check complete ExprASTs, and emit FrontendOutcome"
+schemas = [
+    "schema.BehaviorSource",
+    "schema.ProjectSection",
+    "schema.PathsSection",
+    "schema.PackageSection",
+    "schema.Manifest",
+    "schema.BehaviorVerificationConfig",
+    "schema.SymbolEntry",
+    "schema.SymbolTable",
+    "schema.ImportEntry",
+    "schema.FileImportContext",
+    "schema.ProjectContext",
+    "schema.BehaviorFileAST",
+    "schema.ExprAST",
+    "schema.ParsedExpressions",
+    "schema.SemanticDraft",
+    "schema.BehaviorDiagnostic",
+    "schema.StateDomain",
+    "schema.TypedExpr",
+    "schema.StateAssignment",
+    "schema.NormalizedAction",
+    "schema.NormalizedInvariant",
+    "schema.ExplorerConfig",
+    "schema.NormalizedBehaviorModel",
+    "schema.FrontendOutcome"
+]
+funcs = [
+    "func.loadProjectContext",
+    "func.failOnProjectLoad",
+    "func.parseBehaviorToml",
+    "func.failOnTomlParse",
+    "func.parseExpressions",
+    "func.failOnExprParse",
+    "func.checkTypesAndResolveRefs",
+    "func.buildFrontendOutcome"
+]
+pipeline = [
+    "func.loadProjectContext",
+    { branch = { condition = "project_load_failed", on_true = "func.failOnProjectLoad", on_false = [ "func.parseBehaviorToml", { branch = { condition = "toml_parse_failed", on_true = "func.failOnTomlParse", on_false = [ "func.parseExpressions", { branch = { condition = "expr_parse_failed", on_true = "func.failOnExprParse", on_false = "func.checkTypesAndResolveRefs -> func.buildFrontendOutcome" } } ] } } ] } }
+]
+
+[mod.behavior_engine.explorer]
+purpose = "Phase 1 (v0.1) level-synchronous BFS finite-state model checker, structured TraceStep/OverflowAttempt counterexample builder, and PASS/FAIL/UNKNOWN/ERROR reporter"
+schemas = [
+    "schema.FrontendOutcome",
+    "schema.NormalizedBehaviorModel",
+    "schema.ExplorerConfig",
+    "schema.StateValue",
+    "schema.StateVarBinding",
+    "schema.ModelState",
+    "schema.TraceStep",
+    "schema.OverflowAttempt",
+    "schema.CounterexampleTrace",
+    "schema.ExplorationOutcome",
+    "schema.VerificationReport"
+]
+funcs = [
+    "func.buildStaticErrorReport",
+    "func.exploreAndCheckBfs",
+    "func.buildVerificationReport"
+]
+pipeline = [
+    { branch = { condition = "frontend_has_errors", on_true = "func.buildStaticErrorReport", on_false = "func.exploreAndCheckBfs -> func.buildVerificationReport" } }
+]
+
+[mod.behavior_engine.tla_backend]
+purpose = "Phase 2 (v0.2) TLA+ and TLC/Apalache specification generator from NormalizedBehaviorModel"
+schemas = [
+    "schema.NormalizedBehaviorModel",
+    "schema.TlaPlusSpec"
+]
+funcs = ["func.generateTlaPlus"]
+pipeline = ["func.generateTlaPlus"]
+
+[status]
+updated_at = "2026-11-19"
+
+[status.mod.behavior_engine]
+state = "done"
+coverage = 1.0
+notes = "Aligned Manifest/PackageSection/SymbolTable/FileImportContext 1:1 with existing Rust types and added failOnExprParse short-circuit"
+
+[status.mod.behavior_engine.frontend]
+state = "done"
+coverage = 1.0
+notes = "Phase 1 MVP: Stage-by-stage early-exit frontend (project, TOML, expr, sema) sharing existing Manifest & SymbolTable types"
+
+[status.mod.behavior_engine.explorer]
+state = "done"
+coverage = 1.0
+notes = "Phase 1 MVP: Two-phase per-depth BFS, structured valuations, TraceStep vs OverflowAttempt, and ERROR/FAIL/UNKNOWN/PASS reporting"
+
+[status.mod.behavior_engine.tla_backend]
+state = "done"
+coverage = 1.0
+notes = "Phase 2: TLA+ codegen from NormalizedBehaviorModel"

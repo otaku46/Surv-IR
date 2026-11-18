@@ -94,7 +94,6 @@ purpose = "User creation and domain logic"
 schemas = ["schema.User", "schema.CreateUserRequest", "schema.UserCreatedEvent"]
 funcs = ["func.validateAndCreateUser", "func.emitUserCreatedEvent"]
 pipeline = ["func.validateAndCreateUser", "func.emitUserCreatedEvent"]
-label = "Domain model for users"
 
 # Notification module: Handles side effects
 [mod.notification_service]
@@ -103,7 +102,6 @@ schemas = ["schema.EmailNotification", "schema.UserEmailRelation"]
 funcs = ["func.sendWelcomeEmail"]
 pipeline = ["func.sendWelcomeEmail"]
 boundary = {events = ["user.created"]}
-label = "Cross-cutting notification concern"
 
 # HTTP API module: Orchestrates the flow
 [mod.user_http_api]
@@ -112,4 +110,3 @@ schemas = ["schema.CreateUserRequest", "schema.CreateUserResponse", "schema.User
 funcs = ["func.validateAndCreateUser", "func.emitUserCreatedEvent", "func.sendWelcomeEmail", "func.buildCreateUserResponse"]
 pipeline = ["func.validateAndCreateUser", "func.emitUserCreatedEvent", "func.sendWelcomeEmail", "func.buildCreateUserResponse"]
 boundary = {http = ["POST /users"]}
-label = "Public REST endpoint"

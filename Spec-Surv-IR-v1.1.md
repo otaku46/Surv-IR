@@ -25,6 +25,7 @@
 8. [Validation Rules](#validation-rules)
 9. [Tooling (`surc` CLI)](#tooling-surc-cli)
 10. [Examples](#examples)
+11. [Behavior IR](#behavior-ir)
 
 ---
 
@@ -437,10 +438,15 @@ depends = ["common"]
 root = "design/frontend"
 namespace = "app.ui"
 depends = ["common", "backend"]
+
+# Optional: explicit file list. When present, only these files are loaded.
+[files]
+"design/common/auth.toml" = { description = "Shared auth types" }
 ```
 
-- **`[project]`**: Project name.
+- **`[project]`**: Project name and optional description.
 - **`[paths].ir_root`**: Base directory scanned recursively for `.toml` IR files.
+- **`[files]`**: Optional explicit list of IR files, relative to `ir_root` (or the manifest directory as a fallback). `description` is informational.
 - **`[packages.<name>]`**:
   - `root`: Directory path (relative to `surv.toml`) owning this package's IR files.
   - `namespace`: Default namespace for files in this package.
@@ -491,10 +497,11 @@ When resolving a reference (`schema.*`, `func.*`, or `mod.*`):
 ## Tooling (`surc` CLI)
 
 ```bash
-# 1. Unified validation (single IR file, surv.toml manifest, or deploy.toml)
+# 1. Unified validation (Structural, Behavior, Deploy IR, or a project manifest)
 surc check api.toml
 surc check surv.toml
 surc check deploy.toml
+surc check behavior/order.behavior.toml
 surc check api.toml --ast              # Dump parsed AST as JSON
 
 # 2. Inspection & structural queries
@@ -522,6 +529,9 @@ surc status init api.toml
 surc status sync api.toml
 surc status set mod.user_api api.toml --state partial --coverage 0.7
 surc status list api.toml
+
+# 6. Behavior verification
+surc verify behavior/order.behavior.toml --format json
 ```
 
 ---
@@ -632,3 +642,46 @@ fields = { id = "uuid", items = "OrderItem[]" }
 purpose = "Order processing service"
 schemas = ["schema.OrderItem", "schema.Order"]
 ```
+
+---
+
+## Behavior IR
+
+Structural IR declares schemas, functions, and modules. Behavior IR describes how a system can move between states and which conditions must hold throughout those transitions. Keep Behavior models in separate `*.behavior.toml` files. A project can set `[paths].behavior_root = "behavior"` in `surv.toml` to discover models in a dedicated directory. Each model can optionally link to a structural module with `owner = "mod.name"` and link an action to structural functions with `ref = "func.name"` or `refs = ["func.name"]`. Run with the containing project manifest to resolve those references.
+
+The `vars` table declares state variables and their domains. Set an initial value for every variable in `init`. Each action has an optional `guard` and an `update` table. An omitted guard enables the action in every state. All update expressions read the state before the action, and variables omitted from the update keep their values. An invariant must hold in every reachable state, including the initial state. A state with no enabled actions is a deadlock unless its `terminal` expression is true.
+
+### Example 3: Order Lifecycle
+
+Save this standalone model as `behavior/order.behavior.toml`. From the initial `pending` state, payment and cancellation are both possible. The model checks that a payment can be recorded at most once.
+
+```toml
+[behavior.order]
+terminal = "status == 'paid' or status == 'cancelled'"
+
+[behavior.order.vars]
+status = "enum(pending, paid, cancelled)"
+payment_count = "int(0..2)"
+
+[behavior.order.init]
+status = "pending"
+payment_count = 0
+
+[behavior.order.action.pay]
+guard = "status == 'pending'"
+update = { status = "'paid'", payment_count = "payment_count + 1" }
+
+[behavior.order.action.cancel]
+guard = "status == 'pending'"
+update = { status = "'cancelled'" }
+
+[behavior.order.invariant.no_double_payment]
+expr = "payment_count <= 1"
+```
+
+```bash
+surc check behavior/order.behavior.toml
+surc verify behavior/order.behavior.toml
+```
+
+The model returns `PASS`. Remove the guard from `pay` and rerun verification to get a two-step counterexample in which `pay` fires twice. Verification returns `UNKNOWN` if an exploration limit leaves states unexamined. See the [Behavior IR specification](behavior.md) for expression syntax, exploration limits, and report formats.

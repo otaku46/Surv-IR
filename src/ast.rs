@@ -90,6 +90,8 @@ pub struct ModSection {
     pub funcs: Vec<String>,
     pub pipeline: Vec<PipelineStep>,
     pub submods: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub boundary: BTreeMap<String, Vec<String>>,
 }
 
 impl ModSection {

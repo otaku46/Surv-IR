@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Symbol kind in Surv IR
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SymbolKind {
     Func,
     Schema,
@@ -110,6 +110,9 @@ pub struct FoundSymbol {
 
     /// Struct/interface fields extracted by static analysis when available.
     pub fields: BTreeMap<String, String>,
+    /// Whether static analysis could determine that the named field list is empty.
+    #[serde(skip)]
+    pub fields_known: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,22 +207,6 @@ impl Default for DesignSkeletonOptions {
             emit_mapping: false,
         }
     }
-}
-
-/// Type of drift detected
-#[derive(Debug, Serialize)]
-pub enum DriftKind {
-    /// Symbol expected in IR but not found in code
-    Missing { expected: ExpectedSymbol },
-
-    /// Symbol found in code but not in IR
-    Extra { found: FoundSymbol },
-
-    /// Multiple candidates found for expected symbol
-    Ambiguous {
-        expected: ExpectedSymbol,
-        candidates: Vec<FoundSymbol>,
-    },
 }
 
 /// Result of diff-impl analysis

@@ -19,7 +19,15 @@ pub fn assign_packages_to_files(
     let mut diagnostics = Vec::new();
 
     if manifest.packages.is_empty() {
-        for (path, _) in files {
+        for (path, file) in files {
+            if let Some(package) = file.package.as_deref().filter(|name| *name != "default") {
+                diagnostics.push(Diagnostic {
+                    severity: "error".into(),
+                    kind: "E_PACKAGE_UNKNOWN".into(),
+                    message: format!("Unknown package '{package}'"),
+                    location: path.display().to_string(),
+                });
+            }
             assignments.push(PackageAssignment {
                 file_path: path.clone(),
                 package: "default".to_string(),
@@ -144,6 +152,8 @@ mod tests {
             paths: crate::manifest::PathsSection {
                 ir_root: "ir".into(),
             },
+            description: None,
+            files: HashMap::new(),
             packages: map,
         }
     }

@@ -51,7 +51,7 @@ pub fn build_symbol_table_with_packages(
 ) -> (SymbolTable, Vec<Diagnostic>) {
     let mut entries = Vec::new();
     let mut diags = Vec::new();
-    let mut defined: HashMap<(SymbolKind, String, Option<String>, String), PathBuf> =
+    let mut defined: HashMap<(SymbolKind, String, Option<String>, String), (PathBuf, String)> =
         HashMap::new();
 
     for (path, file) in files {
@@ -72,7 +72,13 @@ pub fn build_symbol_table_with_packages(
                         schema.name.clone(),
                         path,
                     );
-                    report_duplicates(&mut defined, &mut diags, &entry, path);
+                    report_duplicates(
+                        &mut defined,
+                        &mut diags,
+                        &entry,
+                        path,
+                        &format!("{section:?}"),
+                    );
                     entries.push(entry);
                 }
                 Section::Func(func) => {
@@ -83,7 +89,13 @@ pub fn build_symbol_table_with_packages(
                         func.name.clone(),
                         path,
                     );
-                    report_duplicates(&mut defined, &mut diags, &entry, path);
+                    report_duplicates(
+                        &mut defined,
+                        &mut diags,
+                        &entry,
+                        path,
+                        &format!("{section:?}"),
+                    );
                     entries.push(entry);
                 }
                 Section::Mod(module) => {
@@ -94,7 +106,13 @@ pub fn build_symbol_table_with_packages(
                         module.name.clone(),
                         path,
                     );
-                    report_duplicates(&mut defined, &mut diags, &entry, path);
+                    report_duplicates(
+                        &mut defined,
+                        &mut diags,
+                        &entry,
+                        path,
+                        &format!("{section:?}"),
+                    );
                     entries.push(entry);
                 }
                 Section::Meta(_) => {}
@@ -125,10 +143,11 @@ fn make_entry(
 }
 
 fn report_duplicates(
-    defined: &mut HashMap<(SymbolKind, String, Option<String>, String), PathBuf>,
+    defined: &mut HashMap<(SymbolKind, String, Option<String>, String), (PathBuf, String)>,
     diags: &mut Vec<Diagnostic>,
     entry: &SymbolEntry,
     current_path: &Path,
+    definition: &str,
 ) {
     let key = (
         entry.kind,
@@ -136,20 +155,22 @@ fn report_duplicates(
         entry.namespace.clone(),
         entry.local_name.clone(),
     );
-    if let Some(existing) = defined.get(&key) {
-        diags.push(Diagnostic {
-            severity: "warning".into(),
-            kind: "W_AMBIGUOUS_NAME".into(),
-            message: format!(
-                "Symbol '{}' is defined in both {} and {}",
-                entry.fq_name,
-                existing.display(),
-                current_path.display()
-            ),
-            location: current_path.display().to_string(),
-        });
+    if let Some((existing, existing_definition)) = defined.get(&key) {
+        if existing_definition != definition {
+            diags.push(Diagnostic {
+                severity: "warning".into(),
+                kind: "W_AMBIGUOUS_NAME".into(),
+                message: format!(
+                    "Symbol '{}' has conflicting definitions in {} and {}",
+                    entry.fq_name,
+                    existing.display(),
+                    current_path.display()
+                ),
+                location: current_path.display().to_string(),
+            });
+        }
     } else {
-        defined.insert(key, current_path.to_path_buf());
+        defined.insert(key, (current_path.to_path_buf(), definition.to_string()));
     }
 }
 
@@ -166,13 +187,6 @@ fn build_fq_name(
     };
     let ns_segment = namespace.unwrap_or("global");
     format!("pkg.{package}.{prefix}.{ns_segment}.{local_name}")
-}
-
-fn extract_local_name(reference: &str) -> &str {
-    reference
-        .split_once('.')
-        .map(|(_, rest)| rest)
-        .unwrap_or(reference)
 }
 
 fn emit_undefined(
@@ -203,7 +217,7 @@ fn emit_ambiguous(
     context: &str,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let code = "W_AMBIGUOUS_NAME";
+    let code = "E_AMBIGUOUS_NAME";
     let candidates: Vec<String> = matches.iter().map(|entry| entry.fq_name.clone()).collect();
     let kind_str = match kind {
         SymbolKind::Schema => "schema",
@@ -211,7 +225,7 @@ fn emit_ambiguous(
         SymbolKind::Mod => "mod",
     };
     diags.push(Diagnostic {
-        severity: "warning".into(),
+        severity: "error".into(),
         kind: code.into(),
         message: format!(
             "Ambiguous {kind_str} reference '{}'; candidates: {}",
@@ -251,6 +265,7 @@ type = "User"
 [schema.user]
 kind = "node"
 type = "User"
+role = "event"
 "#,
             ),
         ];
@@ -338,6 +353,15 @@ pub fn resolve_names_with_packages(
     symbols: &SymbolTable,
     import_contexts: &[FileImportContext],
 ) -> Vec<Diagnostic> {
+    resolve_project_references(files, symbols, import_contexts, None)
+}
+
+pub(crate) fn resolve_project_references(
+    files: &[(PathBuf, SurvFile)],
+    symbols: &SymbolTable,
+    import_contexts: &[FileImportContext],
+    manifest: Option<&crate::manifest::Manifest>,
+) -> Vec<Diagnostic> {
     let ctx_map: HashMap<_, _> = import_contexts
         .iter()
         .map(|ctx| (ctx.file_path.clone(), ctx))
@@ -348,109 +372,79 @@ pub fn resolve_names_with_packages(
         let Some(ctx) = ctx_map.get(path) else {
             continue;
         };
+        let resolve = |kind, reference: &str, context: &str, diags: &mut Vec<_>| {
+            resolve_reference(
+                symbols, kind, reference, path, ctx, context, manifest, diags,
+            );
+        };
         for section in &file.sections {
             match section {
                 Section::Func(func) => {
-                    for schema in &func.input {
-                        resolve_reference(
-                            symbols,
-                            SymbolKind::Schema,
-                            schema,
-                            path,
-                            ctx,
-                            &format!("func.{}.input({})", func.name, schema),
-                            &mut diags,
-                        );
+                    for (field, references) in [("input", &func.input), ("output", &func.output)] {
+                        for reference in references {
+                            resolve(
+                                SymbolKind::Schema,
+                                reference,
+                                &format!("func.{}.{field}", func.name),
+                                &mut diags,
+                            );
+                        }
                     }
-                    for schema in &func.output {
-                        resolve_reference(
-                            symbols,
+                }
+                Section::Schema(schema) if schema.kind == "edge" => {
+                    for (field, reference) in [("from", &schema.from), ("to", &schema.to)] {
+                        resolve(
                             SymbolKind::Schema,
-                            schema,
-                            path,
-                            ctx,
-                            &format!("func.{}.output({})", func.name, schema),
+                            reference,
+                            &format!("schema.{}.{field}", schema.name),
                             &mut diags,
                         );
                     }
                 }
-                Section::Schema(schema) => match schema.kind.as_str() {
-                    "edge" => {
-                        if !schema.from.is_empty() {
-                            resolve_reference(
-                                symbols,
-                                SymbolKind::Schema,
-                                &schema.from,
-                                path,
-                                ctx,
-                                &format!("schema.{}.from({})", schema.name, schema.from),
-                                &mut diags,
-                            );
-                        }
-                        if !schema.to.is_empty() {
-                            resolve_reference(
-                                symbols,
-                                SymbolKind::Schema,
-                                &schema.to,
-                                path,
-                                ctx,
-                                &format!("schema.{}.to({})", schema.name, schema.to),
-                                &mut diags,
-                            );
-                        }
-                    }
-                    "boundary" => {
-                        for over in &schema.over {
-                            resolve_reference(
-                                symbols,
-                                SymbolKind::Schema,
-                                over,
-                                path,
-                                ctx,
-                                &format!("schema.{}.over({})", schema.name, over),
-                                &mut diags,
-                            );
-                        }
-                    }
-                    _ => {}
-                },
-                Section::Mod(module) => {
-                    for s in &module.schemas {
-                        resolve_reference(
-                            symbols,
+                Section::Schema(schema) if schema.kind == "boundary" => {
+                    for reference in &schema.over {
+                        resolve(
                             SymbolKind::Schema,
-                            s,
-                            path,
-                            ctx,
-                            &format!("mod.{}.schemas({})", module.name, s),
+                            reference,
+                            &format!("schema.{}.over", schema.name),
                             &mut diags,
                         );
+                    }
+                }
+                Section::Mod(module) => {
+                    let context = format!("mod.{}", module.name);
+                    for schema in &module.schemas {
+                        resolve(SymbolKind::Schema, schema, &context, &mut diags);
                     }
                     for func in &module.funcs {
-                        resolve_reference(
-                            symbols,
-                            SymbolKind::Func,
-                            func,
-                            path,
-                            ctx,
-                            &format!("mod.{}.funcs({})", module.name, func),
-                            &mut diags,
-                        );
+                        resolve(SymbolKind::Func, func, &context, &mut diags);
                     }
                     for step in module.get_pipeline_calls() {
-                        resolve_reference(
-                            symbols,
-                            SymbolKind::Func,
-                            &step,
-                            path,
-                            ctx,
-                            &format!("mod.{}.pipeline({})", module.name, step),
-                            &mut diags,
-                        );
+                        resolve(SymbolKind::Func, &step, &context, &mut diags);
+                        if !module.funcs.contains(&step) {
+                            let step_matches =
+                                reference_candidates(symbols, SymbolKind::Func, &step, ctx);
+                            let listed = matches!(step_matches.as_slice(), [target] if module.funcs.iter().any(|func| {
+                                matches!(reference_candidates(symbols, SymbolKind::Func, func, ctx).as_slice(), [candidate] if candidate.fq_name == target.fq_name)
+                            }));
+                            if !listed {
+                                diags.push(Diagnostic {
+                                    severity: "error".into(),
+                                    kind: "PipelineFuncNotInModule".into(),
+                                    message: format!(
+                                        "{context}: pipeline step {step} is absent from funcs"
+                                    ),
+                                    location: path.display().to_string(),
+                                });
+                            }
+                        }
+                    }
+                    for submod in &module.submods {
+                        let reference = format!("mod.{}.{submod}", module.name);
+                        resolve(SymbolKind::Mod, &reference, &context, &mut diags);
                     }
                 }
-                Section::Meta(_) => {}
-                Section::Status(_) => {}
+                _ => {}
             }
         }
     }
@@ -465,208 +459,114 @@ fn resolve_reference(
     path: &Path,
     ctx: &FileImportContext,
     context: &str,
+    manifest: Option<&crate::manifest::Manifest>,
     diags: &mut Vec<Diagnostic>,
 ) {
     if reference.is_empty() {
         return;
     }
+    match reference_candidates(symbols, kind, reference, ctx).as_slice() {
+        [] => emit_undefined(
+            kind,
+            reference,
+            path,
+            &format!("{context}({reference})"),
+            diags,
+        ),
+        [entry] => {
+            if let Some(diag) = check_package_dependency(manifest, ctx, &entry.package) {
+                diags.push(diag);
+            }
+        }
+        matches => emit_ambiguous(kind, reference, matches.to_vec(), path, context, diags),
+    }
+}
 
+pub(crate) fn check_package_dependency(
+    manifest: Option<&crate::manifest::Manifest>,
+    ctx: &FileImportContext,
+    target: &str,
+) -> Option<Diagnostic> {
+    let package = manifest?.packages.get(&ctx.self_package)?;
+    if target == ctx.self_package || package.depends.iter().any(|dep| dep == target) {
+        return None;
+    }
+    Some(Diagnostic {
+        severity: "error".into(),
+        kind: "E_UNDECLARED_DEPENDENCY".into(),
+        message: format!(
+            "Package '{}' does not declare a dependency on '{target}'",
+            ctx.self_package
+        ),
+        location: ctx.file_path.display().to_string(),
+    })
+}
+
+pub fn reference_candidates<'a>(
+    symbols: &'a SymbolTable,
+    kind: SymbolKind,
+    reference: &str,
+    ctx: &FileImportContext,
+) -> Vec<&'a SymbolEntry> {
+    let category = match kind {
+        SymbolKind::Schema => "schema",
+        SymbolKind::Func => "func",
+        SymbolKind::Mod => "mod",
+    };
+    let local_prefix = format!("{category}.");
+    let marker = format!(".{category}.");
     let reference = reference.trim();
-    let (prefix, base) = split_reference(reference);
-
-    match prefix {
-        Some(prefix) if prefix != "schema" && prefix != "func" => {
-            let Some(package) = resolve_prefix(prefix, ctx) else {
-                diags.push(Diagnostic {
-                    severity: "error".into(),
-                    kind: "E_UNDEFINED_PREFIX".into(),
-                    message: format!("Unknown reference prefix '{}'", prefix),
-                    location: format!("{}: {}", path.display(), context),
-                });
-                return;
-            };
-            resolve_package_reference(
-                symbols,
-                kind,
-                &package,
-                extract_local_name(base),
-                reference,
-                path,
-                context,
-                diags,
-            );
-        }
-        _ => {
-            let local = if prefix.is_some() {
-                extract_local_name(base)
-            } else {
-                extract_local_name(reference)
-            };
-
-            if resolve_self_package(symbols, kind, ctx, local, reference, path, context, diags) {
-                return;
-            }
-            if resolve_import_packages(symbols, kind, ctx, local, reference, path, context, diags) {
-                return;
-            }
-            resolve_global_reference(symbols, kind, local, reference, path, context, diags);
-        }
-    }
-}
-
-fn resolve_self_package(
-    symbols: &SymbolTable,
-    kind: SymbolKind,
-    ctx: &FileImportContext,
-    local_name: &str,
-    reference: &str,
-    path: &Path,
-    context: &str,
-    diags: &mut Vec<Diagnostic>,
-) -> bool {
-    let matches = lookup_in_package(
-        symbols,
-        kind,
-        &ctx.self_package,
-        ctx.namespace.as_deref(),
-        local_name,
-    );
-    match matches.len() {
-        0 => false,
-        1 => true,
-        _ => {
-            emit_ambiguous(kind, reference, matches, path, context, diags);
-            true
-        }
-    }
-}
-
-fn resolve_import_packages(
-    symbols: &SymbolTable,
-    kind: SymbolKind,
-    ctx: &FileImportContext,
-    local_name: &str,
-    reference: &str,
-    path: &Path,
-    context: &str,
-    diags: &mut Vec<Diagnostic>,
-) -> bool {
-    let mut matches = Vec::new();
-    for import in &ctx.imports {
-        let found = lookup_in_package(symbols, kind, &import.package, None, local_name);
-        if found.len() == 1 {
-            matches.push(found[0]);
-        } else if found.len() > 1 {
-            emit_ambiguous(kind, reference, found, path, context, diags);
-            return true;
-        }
-    }
-    match matches.len() {
-        0 => false,
-        1 => true,
-        _ => {
-            emit_ambiguous(kind, reference, matches, path, context, diags);
-            true
-        }
-    }
-}
-
-fn resolve_package_reference(
-    symbols: &SymbolTable,
-    kind: SymbolKind,
-    package: &str,
-    local_name: &str,
-    reference: &str,
-    path: &Path,
-    context: &str,
-    diags: &mut Vec<Diagnostic>,
-) {
-    let matches = lookup_in_package(symbols, kind, package, None, local_name);
-    match matches.len() {
-        0 => emit_undefined(kind, reference, path, context, diags),
-        1 => {}
-        _ => emit_ambiguous(kind, reference, matches, path, context, diags),
-    }
-}
-
-fn resolve_global_reference(
-    symbols: &SymbolTable,
-    kind: SymbolKind,
-    local_name: &str,
-    reference: &str,
-    path: &Path,
-    context: &str,
-    diags: &mut Vec<Diagnostic>,
-) {
-    let matches = lookup_any_namespace(symbols, kind, local_name);
-    match matches.len() {
-        0 => emit_undefined(kind, reference, path, context, diags),
-        1 => {}
-        _ => emit_ambiguous(kind, reference, matches, path, context, diags),
-    }
-}
-
-fn resolve_prefix(prefix: &str, ctx: &FileImportContext) -> Option<String> {
-    if prefix == ctx.self_package {
-        return Some(prefix.to_string());
-    }
-    if ctx.namespace.as_deref() == Some(prefix) {
-        return Some(ctx.self_package.clone());
-    }
-    for import in &ctx.imports {
-        if import.alias.as_deref() == Some(prefix) || prefix == import.package {
-            return Some(import.package.clone());
-        }
-    }
-    None
-}
-
-fn split_reference(reference: &str) -> (Option<&str>, &str) {
-    if let Some(idx) = reference.find('.') {
-        let (head, tail) = reference.split_at(idx);
-        (Some(head), &tail[1..])
+    let (prefix, name) = if let Some(name) = reference.strip_prefix(&local_prefix) {
+        (None, name)
+    } else if let Some((prefix, name)) = reference.split_once(&marker) {
+        (Some(prefix), name)
     } else {
         (None, reference)
-    }
-}
-
-fn lookup_in_package<'a>(
-    symbols: &'a SymbolTable,
-    kind: SymbolKind,
-    package: &str,
-    namespace: Option<&str>,
-    local_name: &str,
-) -> Vec<&'a SymbolEntry> {
-    let matches: Vec<_> = symbols
-        .entries
-        .iter()
-        .filter(|entry| {
-            entry.kind == kind && entry.package == package && entry.local_name == local_name
-        })
-        .collect();
-    if let Some(ns) = namespace {
-        let exact: Vec<_> = matches
+    };
+    let candidates = || {
+        symbols
+            .entries
             .iter()
-            .copied()
-            .filter(|entry| entry.namespace.as_deref() == Some(ns))
+            .filter(|e| e.kind == kind && e.local_name == name)
+    };
+    if let Some(prefix) = prefix {
+        let alias = ctx
+            .imports
+            .iter()
+            .find(|import| import.alias.as_deref() == Some(prefix));
+        return candidates()
+            .filter(|e| match alias {
+                Some(import) => e.package == import.package,
+                None => e.package == prefix || e.namespace.as_deref() == Some(prefix),
+            })
             .collect();
-        if !exact.is_empty() {
-            return exact;
-        }
     }
-    matches
-}
 
-fn lookup_any_namespace<'a>(
-    symbols: &'a SymbolTable,
-    kind: SymbolKind,
-    local_name: &str,
-) -> Vec<&'a SymbolEntry> {
-    symbols
-        .entries
+    let same_file: Vec<_> = candidates().filter(|e| e.file == ctx.file_path).collect();
+    if !same_file.is_empty() {
+        return same_file;
+    }
+    let same_package: Vec<_> = candidates()
+        .filter(|e| e.package == ctx.self_package)
+        .collect();
+    let same_namespace: Vec<_> = same_package
         .iter()
-        .filter(|entry| entry.kind == kind && entry.local_name == local_name)
-        .collect()
+        .copied()
+        .filter(|e| e.namespace == ctx.namespace)
+        .collect();
+    if !same_namespace.is_empty() {
+        return same_namespace;
+    }
+    if !same_package.is_empty() {
+        return same_package;
+    }
+    let imported: Vec<_> = candidates()
+        .filter(|e| ctx.imports.iter().any(|i| i.package == e.package))
+        .collect();
+    if !imported.is_empty() {
+        return imported;
+    }
+    candidates().collect()
 }
 
 pub fn resolve_schema_and_func_references(
@@ -722,6 +622,7 @@ type = "User"
 [schema.user]
 kind = "node"
 type = "User"
+role = "event"
 "#,
             ),
         ];

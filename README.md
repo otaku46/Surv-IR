@@ -23,6 +23,10 @@ surc slice mod.todo_api examples/todo_api.toml --with-defs
 # Detect drift between IR and implementation
 surc diff examples/todo_api.toml .
 
+# Plan implementation waves and show ready tasks and blockers
+surc plan examples/plan_engine.toml
+surc plan examples/plan_engine.toml . --lang rust --format json
+
 # Generate Surv IR skeleton from an existing codebase
 surc init-ir . --exclude-tests > skeleton.toml
 
@@ -32,6 +36,21 @@ surc export html design/surv.toml > output.html
 # Generate CI/CD pipeline
 surc codegen github-actions examples/deploy.toml > .github/workflows/deploy.yml
 ```
+
+## Behavior IR
+
+`surc check` validates Behavior IR statically. `surc verify` explores reachable states and returns
+`PASS` (exit 0), `FAIL` or `ERROR` (exit 1), or `UNKNOWN` when exploration is cut short (exit 2).
+
+```bash
+surc check behavior/order.behavior.toml
+surc verify behavior/order.behavior.toml --format json
+surc verify surv.toml --behavior order_lifecycle --max-states 10000
+surc codegen tla+ behavior/order.behavior.toml --format json
+```
+
+Behavior files can use a nearby `surv.toml` or an explicit `--manifest`. Text, JSON, TLA+, and TLC
+configuration can be consumed independently. See the [Behavior IR specification](behavior.md).
 
 ## Documentation Index
 
@@ -99,16 +118,20 @@ surc --help
 | `surc slice <target> <path>` | Extract the minimal IR fragment for a target (`--with-defs`, `--closure`) |
 | `surc refs <target> <path>` | List all references to a `schema.*`, `func.*`, or `mod.*` symbol |
 | `surc trace <target> <path>` | Trace upstream/downstream pipeline & module data flow |
+| `surc plan <ir> [workspace]` | Derive implementation waves, blockers, parallel tracks, and optional status updates |
 | `surc diff <ir> <workspace>` | Detect drift between Surv IR and implementation (alias: `diff-impl`) |
+| `surc deps <surv.toml>` | Show package/module dependencies (`--package`, `--module`, `--cross-package`, `--format mermaid`) |
 | `surc init-ir <workspace>` | Generate a Surv IR design skeleton from source code (`surc skeleton`) |
 | `surc skeleton code <ir>` | Generate implementation code stubs (`rust` / `ts`) from Surv IR |
 | `surc export <type> <path>` | Export Mermaid diagrams or interactive D3.js HTML |
-| `surc codegen <platform> <file>` | Generate CI/CD configuration (`github-actions`, `gitlab-ci`) |
+| `surc codegen <platform> <file>` | Generate CI/CD configuration (`github-actions`, `gitlab-ci`, `tla+`) |
 | `surc status <subcommand>` | Manage implementation status inside Surv IR files |
 
 ---
 
 ## Usage
+
+See the [plan command specification](docs/Spec-Plan-Command.md) for planning options and status-sync rules.
 
 ### 1. Validation & AST Dump (`surc check`)
 `surc check` automatically detects whether the input is a single Surv IR file, a multi-package `surv.toml` manifest, or a Deploy IR file:
