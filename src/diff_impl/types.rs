@@ -105,6 +105,18 @@ pub struct FoundSymbol {
     /// Additional details from LSP
     pub detail: Option<String>,
 
+    /// Target of a Rust/TypeScript `type Alias = ...` declaration.
+    #[serde(default)]
+    pub alias_target: Option<String>,
+
+    /// Effective enum variant names when statically known.
+    #[serde(default)]
+    pub enum_variants: Vec<String>,
+
+    /// Whether the enum variant list is complete and payload-free.
+    #[serde(default)]
+    pub enum_variants_known: bool,
+
     /// Function signature extracted by static analysis when available.
     pub signature: Option<FunctionSignature>,
 
@@ -144,6 +156,17 @@ pub struct SignatureMismatch {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaFieldMismatch {
+    pub expected: ExpectedSymbol,
+    pub found: FoundSymbol,
+    pub problems: Vec<String>,
+}
+
+/// A matched symbol whose type information could not be verified.
+///
+/// This is deliberately separate from drift: an unknown alias, enum mapping,
+/// or unsupported generic must not force the user to rewrite the IR.
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeVerification {
     pub expected: ExpectedSymbol,
     pub found: FoundSymbol,
     pub problems: Vec<String>,
@@ -227,6 +250,9 @@ pub struct DiffResult {
     /// Schemas that exist but whose fields differ from implementation.
     pub schema_field_mismatches: Vec<SchemaFieldMismatch>,
 
+    /// Matched symbols whose types could not be compared conclusively.
+    pub unverified: Vec<TypeVerification>,
+
     /// Symbols successfully matched (for statistics)
     pub matched: usize,
 }
@@ -238,6 +264,10 @@ impl DiffResult {
             || !self.ambiguous.is_empty()
             || !self.signature_mismatches.is_empty()
             || !self.schema_field_mismatches.is_empty()
+    }
+
+    pub fn has_unverified(&self) -> bool {
+        !self.unverified.is_empty()
     }
 
     pub fn issue_count(&self) -> usize {

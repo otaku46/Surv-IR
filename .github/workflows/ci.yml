@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build surc
+        run: cargo build --locked
+
+      - name: Structural IR checks
+        run: |
+          ./target/debug/surc check examples/todo_api.toml
+          ./target/debug/surc check examples/auth.toml
+          ./target/debug/surc check examples/user_api.toml
+          ./target/debug/surc check examples/multi_module_status.toml
+          ./target/debug/surc check examples/surv.toml
+
+      - name: Deploy IR check
+        run: ./target/debug/surc deploy-check examples/deploy.toml
+
+      - name: Behavior IR check and verify
+        run: |
+          ./target/debug/surc check examples/order.behavior.toml
+          ./target/debug/surc verify examples/order.behavior.toml

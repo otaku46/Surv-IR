@@ -1,11 +1,13 @@
 use super::expr::{
-    identifier, parse_expression, type_expression, ExprAST, ExprType, StateValue, TypedExpr,
+    identifier, parse_expression, type_expression, ExprAST, ExprType, Row, Rows, StateValue,
+    TypedExpr,
 };
 use super::loader::{BehaviorSource, ProjectContext};
 use crate::symbol::{check_package_dependency, reference_candidates};
 use crate::{FileImportContext, SymbolKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BehaviorDiagnostic {
@@ -48,12 +50,17 @@ pub struct RawBehavior {
     pub description: Option<String>,
     pub owner: Option<String>,
     pub terminal: Option<String>,
-    #[serde(deserialize_with = "deserialize_dotted_values")]
+    #[serde(default, deserialize_with = "deserialize_dotted_values")]
     pub vars: BTreeMap<String, String>,
-    #[serde(deserialize_with = "deserialize_dotted_values")]
+    #[serde(default, deserialize_with = "deserialize_dotted_values")]
     pub init: BTreeMap<String, toml::Value>,
     #[serde(default)]
     pub action: BTreeMap<String, RawAction>,
+    #[serde(default)]
+    pub tables: BTreeMap<String, RawTable>,
+    #[serde(default)]
+    pub reach: BTreeMap<String, RawGoal>,
+    pub observe: Option<Vec<String>>,
     #[serde(default)]
     pub invariant: BTreeMap<String, RawInvariant>,
     #[serde(default)]
@@ -64,12 +71,41 @@ pub struct RawBehavior {
 #[serde(deny_unknown_fields)]
 pub struct RawAction {
     pub guard: Option<String>,
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub args: BTreeMap<String, RawArgument>,
+    #[serde(default)]
+    pub insert: BTreeMap<String, Vec<BTreeMap<String, String>>>,
     #[serde(default, deserialize_with = "deserialize_dotted_values")]
     pub update: BTreeMap<String, String>,
     #[serde(rename = "ref")]
     pub reference: Option<String>,
     #[serde(default)]
     pub refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawTable {
+    pub schema: String,
+    pub max_rows: usize,
+    pub fields: BTreeMap<String, String>,
+    #[serde(default)]
+    pub initial: Vec<BTreeMap<String, toml::Value>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawArgument {
+    #[serde(rename = "type")]
+    pub domain: String,
+    pub value: toml::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawGoal {
+    pub expr: String,
 }
 
 fn deserialize_dotted_values<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
@@ -140,6 +176,12 @@ pub struct StateDomain {
     pub variants: Vec<String>,
     pub min_val: Option<i128>,
     pub max_val: Option<i128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_schema: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub table_fields: BTreeMap<String, StateDomain>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_rows: Option<usize>,
 }
 
 impl StateDomain {
@@ -147,6 +189,13 @@ impl StateDomain {
         match self.domain_kind {
             "bool" => ExprType::Bool,
             "enum" => ExprType::Enum(self.variants.clone()),
+            "id" => ExprType::Id(self.id_schema.clone().unwrap(), self.variants.clone()),
+            "table" => ExprType::Table(
+                self.table_fields
+                    .iter()
+                    .map(|(name, field)| (name.clone(), field.expr_type()))
+                    .collect(),
+            ),
             _ => ExprType::Int,
         }
     }
@@ -157,6 +206,7 @@ impl StateDomain {
                 .min_val
                 .zip(self.max_val)
                 .is_none_or(|(lo, hi)| (lo..=hi).contains(value)),
+            StateValue::Enum(value) => self.variants.contains(value),
             _ => true,
         }
     }
@@ -174,6 +224,9 @@ pub struct NormalizedAction {
     pub surv_func_refs: Vec<String>,
     pub resolved_func_fqns: Vec<String>,
     pub guard: Option<TypedExpr>,
+    pub operation: String,
+    pub args: Row,
+    pub inserts: BTreeMap<String, Vec<BTreeMap<String, TypedExpr>>>,
     pub updates: Vec<StateAssignment>,
 }
 
@@ -185,8 +238,17 @@ pub struct NormalizedInvariant {
     pub(super) source: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationBackend {
+    #[default]
+    Internal,
+    Smt,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ExplorerConfig {
+    pub backend: VerificationBackend,
     pub max_states: usize,
     pub max_depth: usize,
     pub check_deadlock: bool,
@@ -202,8 +264,39 @@ pub struct NormalizedBehaviorModel {
     pub init_assignments: Vec<StateAssignment>,
     pub actions: Vec<NormalizedAction>,
     pub invariants: Vec<NormalizedInvariant>,
+    pub goals: BTreeMap<String, TypedExpr>,
+    pub observe: Option<Vec<String>>,
     pub terminal: Option<TypedExpr>,
     pub config: ExplorerConfig,
+}
+
+impl NormalizedBehaviorModel {
+    pub(super) fn expressions(&self) -> impl Iterator<Item = &TypedExpr> {
+        self.init_assignments
+            .iter()
+            .map(|assignment| &assignment.value_expr)
+            .chain(self.terminal.iter())
+            .chain(self.invariants.iter().map(|invariant| &invariant.expr))
+            .chain(self.goals.values())
+            .chain(self.actions.iter().flat_map(|action| {
+                action
+                    .guard
+                    .iter()
+                    .chain(
+                        action
+                            .updates
+                            .iter()
+                            .map(|assignment| &assignment.value_expr),
+                    )
+                    .chain(
+                        action
+                            .inserts
+                            .values()
+                            .flatten()
+                            .flat_map(|row| row.values()),
+                    )
+            }))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -287,11 +380,9 @@ fn parse_model_expressions(
                 value: StateValue::Int((*value).into()),
             }),
             toml::Value::String(value)
-                if raw
-                    .vars
-                    .get(name)
-                    .is_some_and(|ty| ty.trim().starts_with("enum("))
-                    && !value.starts_with('\'') =>
+                if raw.vars.get(name).is_some_and(|ty| {
+                    ty.trim().starts_with("enum(") || ty.trim().starts_with("id(")
+                }) && !value.starts_with('\'') =>
             {
                 Ok(ExprAST::Literal {
                     value: StateValue::Enum(value.clone()),
@@ -305,7 +396,20 @@ fn parse_model_expressions(
     if let Some(expr) = &raw.terminal {
         add(&["terminal"], parse_expression(expr));
     }
+    for (name, goal) in &raw.reach {
+        add(&["reach", name, "expr"], parse_expression(&goal.expr));
+    }
     for (name, action) in &raw.action {
+        for (table, rows) in &action.insert {
+            for (index, row) in rows.iter().enumerate() {
+                for (field, expr) in row {
+                    add(
+                        &["action", name, "insert", table, &index.to_string(), field],
+                        parse_expression(expr),
+                    );
+                }
+            }
+        }
         if let Some(expr) = &action.guard {
             add(&["action", name, "guard"], parse_expression(expr));
         }
@@ -351,6 +455,9 @@ fn state_domain(name: &str, text: &str, bound: Option<&Bound>) -> Result<StateDo
         variants: Vec::new(),
         min_val: None,
         max_val: None,
+        id_schema: None,
+        table_fields: BTreeMap::new(),
+        max_rows: None,
     };
     let text = text.trim();
     match text {
@@ -401,6 +508,115 @@ fn state_domain(name: &str, text: &str, bound: Option<&Bound>) -> Result<StateDo
     Ok(domain)
 }
 
+type Resolve<'a> =
+    dyn FnMut(&str, SymbolKind, &str, &mut Vec<BehaviorDiagnostic>) -> Option<String> + 'a;
+
+fn resolved_domain(
+    name: &str,
+    text: &str,
+    bound: Option<&Bound>,
+    location: &str,
+    resolve: &mut Resolve<'_>,
+    diagnostics: &mut Vec<BehaviorDiagnostic>,
+) -> Result<StateDomain, String> {
+    if let Some(id) = text
+        .trim()
+        .strip_prefix("id(")
+        .and_then(|ty| ty.strip_suffix(')'))
+    {
+        let (schema, variants) = id
+            .split_once(',')
+            .ok_or("expected id(schema.Name, value, ...)")?;
+        let mut domain = state_domain(name, &format!("enum({variants})"), bound)?;
+        domain.id_schema = Some(
+            resolve(schema.trim(), SymbolKind::Schema, location, diagnostics)
+                .ok_or("could not resolve ID schema")?,
+        );
+        domain.domain_kind = "id";
+        Ok(domain)
+    } else {
+        state_domain(name, text, bound)
+    }
+}
+
+fn finite_value(domain: &StateDomain, value: &toml::Value) -> Result<StateValue, String> {
+    let value = match (domain.domain_kind, value) {
+        ("bool", toml::Value::Boolean(value)) => StateValue::Bool(*value),
+        ("bounded_int", toml::Value::Integer(value)) => StateValue::Int((*value).into()),
+        ("enum" | "id", toml::Value::String(value)) => StateValue::Enum(value.clone()),
+        _ => {
+            return Err(format!(
+                "'{}' requires a literal of finite type",
+                domain.var_name
+            ))
+        }
+    };
+    if !domain.contains(&value) {
+        return Err(format!(
+            "value {value} is outside the domain of '{}'",
+            domain.var_name
+        ));
+    }
+    Ok(value)
+}
+
+fn table_domain(
+    name: &str,
+    table: &RawTable,
+    schema: &str,
+    project: &ProjectContext,
+    location: &str,
+    resolve: &mut Resolve<'_>,
+    diagnostics: &mut Vec<BehaviorDiagnostic>,
+) -> Result<(StateDomain, Rows), String> {
+    if name.contains('.') || table.max_rows == 0 {
+        return Err("table requires a simple name and positive max_rows".into());
+    }
+    let mut domain = state_domain(name, "bool", None)?;
+    domain.domain_kind = "table";
+    domain.max_rows = Some(table.max_rows);
+    for (field, ty) in &table.fields {
+        if field != "id" {
+            project.check_field_path(schema, field)?;
+        }
+        let field_domain = resolved_domain(field, ty, None, location, resolve, diagnostics)?;
+        if field_domain.domain_kind == "int" {
+            return Err(format!("field '{field}' requires a finite domain"));
+        }
+        domain.table_fields.insert(field.clone(), field_domain);
+    }
+    if domain
+        .table_fields
+        .get("id")
+        .and_then(|id| id.id_schema.as_deref())
+        != Some(schema)
+    {
+        return Err("table id must have the table's schema as its ID type".into());
+    }
+    if table.initial.len() > table.max_rows {
+        return Err("initial rows exceed max_rows".into());
+    }
+    let mut initial = Rows::new();
+    for row in &table.initial {
+        if !row.keys().eq(domain.table_fields.keys()) {
+            return Err("initial row must define exactly the declared fields".into());
+        }
+        let values: Row = row
+            .iter()
+            .map(|(field, value)| {
+                finite_value(&domain.table_fields[field], value).map(|value| (field.clone(), value))
+            })
+            .collect::<Result<_, _>>()?;
+        let StateValue::Enum(id) = &values["id"] else {
+            unreachable!("validated ID")
+        };
+        if initial.insert(id.clone(), values).is_some() {
+            return Err("duplicate initial row ID".into());
+        }
+    }
+    Ok((domain, initial))
+}
+
 pub(super) fn check_behavior_semantics(
     ast: &BehaviorFileAST,
     mut expressions: ParsedExpressions,
@@ -441,8 +657,19 @@ fn check_model_semantics(
     diagnostics: &mut Vec<BehaviorDiagnostic>,
 ) -> NormalizedBehaviorModel {
     let mut domains = Vec::new();
+    let mut table_initial = BTreeMap::new();
+    let mut resolver = |reference: &str, kind, loc: &str, diagnostics: &mut Vec<_>| {
+        resolve_symbol(reference, kind, project, context, loc, diagnostics)
+    };
     for (var, text) in &raw.vars {
-        match state_domain(var, text, raw.check.bounds.get(var)) {
+        match resolved_domain(
+            var,
+            text,
+            raw.check.bounds.get(var),
+            &format!("{location}.vars.{var}"),
+            &mut resolver,
+            diagnostics,
+        ) {
             Ok(domain) => domains.push(domain),
             Err(err) => diagnostics.push(BehaviorDiagnostic::error(
                 "E_STATE_DOMAIN",
@@ -470,7 +697,56 @@ fn check_model_semantics(
             "bounds refer to an undeclared variable",
         ));
     }
+    for (name, table) in &raw.tables {
+        let loc = format!("{location}.tables.{name}");
+        if raw.vars.contains_key(name) {
+            diagnostics.push(BehaviorDiagnostic::error(
+                "E_TABLE",
+                &loc,
+                "table name duplicates a state variable",
+            ));
+            continue;
+        }
+        let Some(schema) = resolver(&table.schema, SymbolKind::Schema, &loc, diagnostics) else {
+            continue;
+        };
+        let result = table_domain(
+            name,
+            table,
+            &schema,
+            project,
+            &loc,
+            &mut resolver,
+            diagnostics,
+        );
+        match result {
+            Ok((domain, initial)) => {
+                domains.push(domain);
+                table_initial.insert(name.clone(), initial);
+            }
+            Err(err) => diagnostics.push(BehaviorDiagnostic::error("E_TABLE", loc, err)),
+        }
+    }
+    domains.sort_by(|a, b| a.var_name.cmp(&b.var_name));
+    if let Some(observe) = &raw.observe {
+        let mut seen = BTreeSet::new();
+        for name in observe {
+            if !seen.insert(name) || !raw.vars.contains_key(name) {
+                diagnostics.push(BehaviorDiagnostic::error(
+                    "E_OBSERVE",
+                    format!("{location}.observe"),
+                    format!("observation must name a distinct scalar state variable: '{name}'"),
+                ));
+            }
+        }
+    }
+
     let config = ExplorerConfig {
+        backend: if project.verification.default_backend == "smt" {
+            VerificationBackend::Smt
+        } else {
+            VerificationBackend::Internal
+        },
         max_states: raw
             .check
             .max_states
@@ -502,6 +778,7 @@ fn check_model_semantics(
     let mut check = |key: &[&str],
                      domain: Option<&StateDomain>,
                      is_assignment: bool,
+                     arguments: &BTreeMap<String, StateDomain>,
                      diagnostics: &mut Vec<BehaviorDiagnostic>| {
         let ast = trees.remove(
             &key.iter()
@@ -518,8 +795,16 @@ fn check_model_semantics(
             return None;
         }
         let ty = domain.map_or(ExprType::Bool, StateDomain::expr_type);
-        let available = if key[0] == "init" { &[][..] } else { &domains };
-        match type_expression(ast, available, &ty) {
+        let available = |name: &str| {
+            if key[0] == "init" {
+                return None;
+            }
+            arguments
+                .get(name)
+                .or_else(|| domains.iter().find(|domain| domain.var_name == name))
+                .map(StateDomain::expr_type)
+        };
+        match type_expression(ast, &available, &ty) {
             Ok(expr) => {
                 if let Some(domain) = domain.filter(|_| key[0] == "init") {
                     match expr.eval(&|_| None) {
@@ -543,14 +828,18 @@ fn check_model_semantics(
         }
     };
 
-    let init_assignments = raw
+    let no_arguments = BTreeMap::new();
+    let mut init_assignments: Vec<_> = raw
         .init
         .keys()
         .filter_map(|var| {
             check(
                 &["init", var],
-                domains.iter().find(|domain| domain.var_name == *var),
+                domains
+                    .iter()
+                    .find(|domain| domain.var_name == *var && domain.max_rows.is_none()),
                 true,
+                &no_arguments,
                 diagnostics,
             )
             .map(|value_expr| StateAssignment {
@@ -559,7 +848,37 @@ fn check_model_semantics(
             })
         })
         .collect();
-    let terminal = check(&["terminal"], None, false, diagnostics);
+    init_assignments.extend(table_initial.into_iter().map(|(target_var, rows)| {
+        StateAssignment {
+            value_expr: TypedExpr {
+                ast: ExprAST::Literal {
+                    value: StateValue::Table(Arc::new(rows)),
+                },
+                result_type: domains
+                    .iter()
+                    .find(|domain| domain.var_name == target_var)
+                    .unwrap()
+                    .expr_type(),
+            },
+            target_var,
+        }
+    }));
+    init_assignments.sort_by(|a, b| a.target_var.cmp(&b.target_var));
+    let terminal = check(&["terminal"], None, false, &no_arguments, diagnostics);
+    let goals = raw
+        .reach
+        .keys()
+        .filter_map(|name| {
+            check(
+                &["reach", name, "expr"],
+                None,
+                false,
+                &no_arguments,
+                diagnostics,
+            )
+            .map(|expr| (name.clone(), expr))
+        })
+        .collect();
     let mut actions = Vec::new();
     for (name, action) in &raw.action {
         let surv_func_refs: Vec<_> = action
@@ -581,15 +900,59 @@ fn check_model_semantics(
                 )
             })
             .collect();
-        let guard = check(&["action", name, "guard"], None, false, diagnostics);
+        let operation = action.operation.clone().unwrap_or_else(|| name.clone());
+        if action.operation.is_some() && (!identifier(&operation) || operation.contains('.')) {
+            diagnostics.push(BehaviorDiagnostic::error(
+                "E_OPERATION",
+                format!("{location}.action.{name}.operation"),
+                "expected an operation identifier",
+            ));
+        }
+        let mut argument_domains = BTreeMap::new();
+        let mut args = Row::new();
+        for (argument, binding) in &action.args {
+            let loc = format!("{location}.action.{name}.args.{argument}");
+            let result = resolved_domain(
+                argument,
+                &binding.domain,
+                None,
+                &loc,
+                &mut resolver,
+                diagnostics,
+            )
+            .and_then(|domain| {
+                if argument.contains('.') || domains.iter().any(|var| var.var_name == *argument) {
+                    return Err("argument name must be simple and distinct from state names".into());
+                }
+                let value = finite_value(&domain, &binding.value)?;
+                Ok((domain, value))
+            });
+            match result {
+                Ok((domain, value)) => {
+                    argument_domains.insert(argument.clone(), domain);
+                    args.insert(argument.clone(), value);
+                }
+                Err(err) => diagnostics.push(BehaviorDiagnostic::error("E_ARGUMENT", loc, err)),
+            }
+        }
+        let guard = check(
+            &["action", name, "guard"],
+            None,
+            false,
+            &argument_domains,
+            diagnostics,
+        );
         let updates = action
             .update
             .keys()
             .filter_map(|var| {
                 check(
                     &["action", name, "update", var],
-                    domains.iter().find(|domain| domain.var_name == *var),
+                    domains
+                        .iter()
+                        .find(|domain| domain.var_name == *var && domain.max_rows.is_none()),
                     true,
+                    &argument_domains,
                     diagnostics,
                 )
                 .map(|value_expr| StateAssignment {
@@ -598,10 +961,56 @@ fn check_model_semantics(
                 })
             })
             .collect();
+        let mut inserts = BTreeMap::new();
+        for (table, rows) in &action.insert {
+            let loc = format!("{location}.action.{name}.insert.{table}");
+            let Some(domain) = domains
+                .iter()
+                .find(|domain| domain.var_name == *table && domain.max_rows.is_some())
+            else {
+                diagnostics.push(BehaviorDiagnostic::error(
+                    "E_TABLE_INSERT",
+                    loc,
+                    "undeclared table",
+                ));
+                continue;
+            };
+            let mut checked_rows = Vec::new();
+            for (index, row) in rows.iter().enumerate() {
+                if !row.keys().eq(domain.table_fields.keys()) {
+                    diagnostics.push(BehaviorDiagnostic::error(
+                        "E_TABLE_INSERT",
+                        &loc,
+                        format!("row {index} must define exactly the declared fields"),
+                    ));
+                    continue;
+                }
+                checked_rows.push(
+                    domain
+                        .table_fields
+                        .iter()
+                        .filter_map(|(field, domain)| {
+                            check(
+                                &["action", name, "insert", table, &index.to_string(), field],
+                                Some(domain),
+                                true,
+                                &argument_domains,
+                                diagnostics,
+                            )
+                            .map(|expr| (field.clone(), expr))
+                        })
+                        .collect(),
+                );
+            }
+            inserts.insert(table.clone(), checked_rows);
+        }
         actions.push(NormalizedAction {
             name: name.clone(),
             surv_func_refs,
             resolved_func_fqns,
+            operation,
+            args,
+            inserts,
             guard,
             updates,
         });
@@ -616,7 +1025,13 @@ fn check_model_semantics(
                 "severity must be error or warning",
             ));
         }
-        if let Some(expr) = check(&["invariant", name, "expr"], None, false, diagnostics) {
+        if let Some(expr) = check(
+            &["invariant", name, "expr"],
+            None,
+            false,
+            &no_arguments,
+            diagnostics,
+        ) {
             invariants.push(NormalizedInvariant {
                 name: name.clone(),
                 expr,
@@ -634,6 +1049,8 @@ fn check_model_semantics(
         init_assignments,
         actions,
         invariants,
+        goals,
+        observe: raw.observe.clone(),
         terminal,
         config,
     }
@@ -647,10 +1064,10 @@ fn resolve_symbol(
     location: &str,
     diagnostics: &mut Vec<BehaviorDiagnostic>,
 ) -> Option<String> {
-    let expected = if kind == SymbolKind::Mod {
-        "mod"
-    } else {
-        "func"
+    let expected = match kind {
+        SymbolKind::Mod => "mod",
+        SymbolKind::Func => "func",
+        SymbolKind::Schema => "schema",
     };
     if !reference.starts_with(&format!("{expected}."))
         && !reference.contains(&format!(".{expected}."))

@@ -122,6 +122,7 @@ mod tests {
             description: None,
             files: HashMap::new(),
             packages: map,
+            diff: Default::default(),
         }
     }
 

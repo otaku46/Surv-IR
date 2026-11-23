@@ -106,7 +106,7 @@ flowchart TD
 | **`ambiguous`** | コード上に複数の候補シンボルが見つかり一意に特定できない | **要マッピング／`impl.path` 明示タスク**（未完了扱い） |
 | **`missing`** | コード上にシンボルが存在しない | **新規実装タスク**（未完了扱い） |
 | **`out_of_scope`** | `--lang rust` 指定時に `impl.lang = "ts"` である等、今回の言語フィルタ対象外 | 進捗母数から除外し、他シンボルをブロックしない |
-| **`unverified`** | `workspace_root` 省略時（設計単独モード） | 全シンボルを未検証として Wave 1 以降に配置 |
+| **`unverified`** | `workspace_root` 省略時、または型情報を一意に解釈できない場合 | 全シンボルを未検証として Wave 1 以降に配置。差分（drift）とは区別し、done にはしない |
 
 ### 5.2 モジュール統合ユニット（`mod.*` / `mod_integration`）の状態導出
 `diff_impl` が直接照合するのは `schema.*` と `func.*` であり、`mod.*`（`unit_kind = "mod_integration"`）はコード上の単一シンボルを持たないため、以下の規則で状態を導出する：
@@ -132,6 +132,9 @@ flowchart TD
    - $\text{IncompleteDeps}(u) \neq \emptyset$ のとき:
      - **`readiness = "blocked"`**（`blocked_by` に $\text{IncompleteDeps}(u)$ の ID 一覧を記録）。
      - **`wave_index = 1 + max_{d in IncompleteDeps(u)} wave_index(d)`**。
+   - 依存先は完了しているが、型照合が `unverified` の unit:
+     - **`readiness = "unverified"`**、**`wave_index = 1`**。
+     - `ready` / `blocked` の件数には含めず、`unverified_unit_count` に計上する。
 
 この定義により、**同一 Wave 番号に属するすべての `PlanWorkUnit` は互いに Hard 依存を持たず、完全に並列実行可能**であることが保証される。
 
@@ -151,8 +154,10 @@ flowchart TD
 
 - **カバレッジ**: $\text{coverage} = \frac{|\text{done}(S_M)| + |\text{done}(F_M)|}{|S_M| + |F_M|}$（対象シンボルが 0 個の場合は子モジュール平均、それもなければ `0.0`）
 - **状態（`state`）の自動導出**（既存の `state` が手動で `"blocked"` に設定されている場合は上書きせず保持する）：
-  1. $|S_M| + |F_M| > 0$ かつ全シンボルが `done`（`drifted == 0`） → **`"done"`**
-  2. $|\text{done}(S_M)| + |\text{done}(F_M)| == 0$ かつ `drifted == 0` → **`"todo"`**
+  1. $|S_M| + |F_M| > 0$ かつ全シンボルが `done`（`drifted == 0`、`unverified == 0`） → **`"done"`**
+  2. $|\text{done}(S_M)| + |\text{done}(F_M)| == 0$ かつ `drifted == 0`、`unverified == 0` → **`"todo"`**
   3. $|S_M| > 0$ かつ全 $S_M$ が `done` だが $|F_M| > 0$ で $|\text{done}(F_M)| == 0$ → **`"skeleton"`**（型定義のみ完了）
-  4. 上記以外（一部実装済み、または `drifted` / `ambiguous` あり） → **`"partial"`**
+  4. 上記以外（一部実装済み、または `drifted` / `ambiguous` / `unverified` あり） → **`"partial"`**
 - **書込失敗時の扱い**: ファイルの権限不足等で `[status]` の書き戻しに失敗した場合は、`StatusSyncOutcome.has_errors = true` として診断を記録し、算出された Wave 計画自体は保持しつつ最終 `PlanReport.status` を `"ERROR"`（終了コード `1`）とする。
+
+`unverified` は drift ではないため `drift_rate` や失敗終了コードには含めませんが、`done` として扱わず、plan の `unverified_symbols` / `unverified_unit_count` に計上します。型の未検証が解消されるまで、そのシンボルに依存するモジュールは完了扱いにしません。

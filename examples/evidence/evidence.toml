@@ -1,0 +1,50 @@
+[schema.EvidenceCapsule]
+kind = "node"
+role = "entity"
+fields = { artifact = "string", target = "schema.StatementTarget" }
+
+[schema.Attestation]
+kind = "node"
+role = "entity"
+fields = { artifact = "string", attestor = "string", guarantee = "string", content = "string", validation_ref = "schema.VerificationRecord" }
+
+[schema.VerificationRecord]
+kind = "node"
+role = "entity"
+fields = { result = "string", obligation = "schema.ObligationKey" }
+
+[schema.ObligationKey]
+kind = "node"
+role = "value"
+fields = { target = "schema.StatementTarget" }
+
+[schema.StatementTarget]
+kind = "node"
+role = "value"
+fields = { artifact = "string", attestor = "string", guarantee = "string", content = "string" }
+
+[schema.Ruleset]
+kind = "node"
+role = "entity"
+fields = { attestor = "string", guarantee = "string" }
+
+[schema.Standing]
+kind = "node"
+role = "report"
+fields = { standing = "string", selected_attestation = "schema.Attestation" }
+
+[func.select_attestation]
+intent = "Publish an attestation about the capsule to the test ledger"
+input = ["schema.Attestation"]
+output = ["schema.Attestation"]
+
+[func.evaluate_evidence]
+intent = "Evaluate the capsule against the selected attestation and its verification"
+input = ["schema.EvidenceCapsule", "schema.Attestation", "schema.VerificationRecord", "schema.Ruleset"]
+output = ["schema.Standing"]
+
+[mod.evidence]
+purpose = "Finite projection of the gj attestation decision"
+schemas = ["schema.EvidenceCapsule", "schema.Attestation", "schema.VerificationRecord", "schema.ObligationKey", "schema.StatementTarget", "schema.Ruleset", "schema.Standing"]
+funcs = ["func.select_attestation", "func.evaluate_evidence"]
+pipeline = ["func.select_attestation", "func.evaluate_evidence"]

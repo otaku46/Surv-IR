@@ -1,17 +1,24 @@
 mod explorer;
 mod expr;
+mod lean;
 pub(crate) mod loader;
 mod model;
 mod reporter;
+mod smt;
+mod symbolic;
 mod tla;
+pub use lean::{
+    generate_lean_spec, generate_lean_spec_with_proof, LeanProof, LeanProofMode, LeanSpec,
+};
 pub use tla::{generate_tla_spec, TlaPlusSpec};
 
 pub use explorer::{
-    CounterexampleTrace, ExplorationOutcome, ModelState, OverflowAttempt, StateVarBinding,
-    TraceStep,
+    CounterexampleTrace, ExplorationOutcome, ModelState, OverflowAttempt, ReplayStep, ReplayTrace,
+    StateVarBinding, TraceStep,
 };
-pub use expr::{ExprAST, StateValue, TypedExpr};
+pub use expr::{ExprAST, ReplayValue, ReplayValues, StateValue, TypedExpr};
 pub use loader::{looks_like_behavior, BehaviorSource, BehaviorVerificationConfig, ProjectContext};
+pub use model::VerificationBackend;
 pub use model::{
     BehaviorDiagnostic, BehaviorFileAST, ExplorerConfig, FrontendOutcome, NormalizedBehaviorModel,
 };

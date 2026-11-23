@@ -60,20 +60,12 @@ fn is_non_ir_source(path: &Path) -> bool {
     if source.contains("surv-behavior") && crate::behavior::loader::has_behavior_metadata(&source) {
         return true;
     }
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        return trimmed == "[deploy]"
-            || trimmed.starts_with("[deploy.")
-            || trimmed == "[behavior]"
-            || trimmed.starts_with("[behavior.")
-            || trimmed == "[project]"
-            || trimmed == "[paths]"
-            || trimmed.starts_with("[packages.");
-    }
-    false
+    let Ok(table) = source.parse::<toml::Table>() else {
+        return false;
+    };
+    ["deploy", "behavior", "project", "paths", "packages"]
+        .iter()
+        .any(|key| table.contains_key(*key))
 }
 
 pub fn load_project(manifest_path: &Path) -> Result<ProjectAST, Box<dyn std::error::Error>> {

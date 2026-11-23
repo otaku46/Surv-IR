@@ -10,5 +10,5 @@ pub(crate) use matcher::diff_expected_symbols;
 pub use matcher::{diff_impl, extract_ir_for_code_skeleton, scan_workspace_for_skeleton};
 pub use types::{
     DedupMode, DesignSkeletonOptions, DiffResult, ExpectedSymbol, FoundSymbol, MappingEntry,
-    MappingFile, SymbolKind,
+    MappingFile, SymbolKind, TypeVerification,
 };

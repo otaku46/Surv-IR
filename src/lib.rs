@@ -34,8 +34,7 @@ pub use project::{ModRef, NormalizedRequire, ProjectAST};
 pub use project_checker::{
     check_project, check_project_manifest, load_ir_context, load_project_context, ProjectContext,
 };
-#[doc(hidden)]
-pub use simple_toml::legacy_status_ranges;
+
 pub use symbol::{
     build_symbol_table, build_symbol_table_with_packages, reference_candidates,
     resolve_schema_and_func_references, SymbolEntry, SymbolKind, SymbolTable,

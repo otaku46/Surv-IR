@@ -12,13 +12,14 @@ pub fn report_text(result: &DiffResult) -> String {
 
     // Summary
     output.push_str(&format!(
-        "Summary: {} matched, {} missing, {} signature mismatch, {} schema field mismatch, {} ambiguous, {} extra\n\n",
+        "Summary: {} matched, {} missing, {} signature mismatch, {} schema field mismatch, {} ambiguous, {} extra, {} unverified\n\n",
         result.matched,
         result.missing.len(),
         result.signature_mismatches.len(),
         result.schema_field_mismatches.len(),
         result.ambiguous.len(),
-        result.extra.len()
+        result.extra.len(),
+        result.unverified.len()
     ));
 
     // Missing symbols
@@ -75,6 +76,21 @@ pub fn report_text(result: &DiffResult) -> String {
         output.push('\n');
     }
 
+    if !result.unverified.is_empty() {
+        output.push_str("ℹ️  Unverified types (not counted as drift):\n");
+        for verification in &result.unverified {
+            output.push_str(&format!(
+                "  {} at {}\n",
+                verification.expected.surv_name,
+                format_location(&verification.found.uri, &verification.found.range)
+            ));
+            for problem in &verification.problems {
+                output.push_str(&format!("    - {}\n", problem));
+            }
+        }
+        output.push('\n');
+    }
+
     // Ambiguous symbols
     if !result.ambiguous.is_empty() {
         output.push_str("⚠️  Ambiguous (multiple candidates found):\n");
@@ -114,11 +130,16 @@ pub fn report_text(result: &DiffResult) -> String {
     }
 
     // Status
-    if !result.has_issues() {
-        output.push_str("✅ No drift detected! IR and implementation are in sync.\n");
-    } else {
+    if result.has_issues() {
         output
             .push_str("⚠️  Drift detected. Review missing/ambiguous/signature mismatch symbols.\n");
+    } else if result.has_unverified() {
+        output.push_str(&format!(
+            "✅ No drift detected, but {} symbol(s) have unverified types.\n",
+            result.unverified.len()
+        ));
+    } else {
+        output.push_str("✅ No drift detected! IR and implementation are in sync.\n");
     }
 
     output
@@ -134,7 +155,9 @@ pub fn report_json(result: &DiffResult) -> String {
             "schema_field_mismatches": result.schema_field_mismatches.len(),
             "ambiguous": result.ambiguous.len(),
             "extra": result.extra.len(),
-            "has_issues": result.has_issues()
+            "unverified": result.unverified.len(),
+            "has_issues": result.has_issues(),
+            "has_unverified": result.has_unverified()
         },
         "missing": result.missing.iter().map(|exp| {
             json!({
@@ -172,6 +195,19 @@ pub fn report_json(result: &DiffResult) -> String {
                 },
                 "found": found_symbol_json(&mismatch.found),
                 "problems": mismatch.problems,
+            })
+        }).collect::<Vec<_>>(),
+        "unverified": result.unverified.iter().map(|verification| {
+            json!({
+                "expected": {
+                    "name": verification.expected.surv_name,
+                    "impl_bind": verification.expected.impl_bind,
+                    "impl_lang": verification.expected.impl_lang,
+                    "impl_path": verification.expected.impl_path,
+                    "kind": format!("{:?}", verification.expected.kind)
+                },
+                "found": found_symbol_json(&verification.found),
+                "problems": verification.problems,
             })
         }).collect::<Vec<_>>(),
         "ambiguous": result.ambiguous.iter().map(|(exp, candidates)| {
@@ -213,6 +249,10 @@ pub fn report_markdown(result: &DiffResult) -> String {
     output.push_str(&format!(
         "- ⚠️  Ambiguous: **{}**\n",
         result.ambiguous.len()
+    ));
+    output.push_str(&format!(
+        "- ℹ️  Unverified types: **{}**\n",
+        result.unverified.len()
     ));
     output.push_str(&format!("- ℹ️  Extra: **{}**\n\n", result.extra.len()));
 
@@ -266,6 +306,22 @@ pub fn report_markdown(result: &DiffResult) -> String {
         }
     }
 
+    if !result.unverified.is_empty() {
+        output.push_str("## ℹ️  Unverified types (not counted as drift)\n\n");
+        for verification in &result.unverified {
+            output.push_str(&format!("### `{}`\n\n", verification.expected.surv_name));
+            output.push_str(&format!(
+                "Implementation: `{}` at {}\n\n",
+                verification.found.name,
+                format_location(&verification.found.uri, &verification.found.range)
+            ));
+            for problem in &verification.problems {
+                output.push_str(&format!("- {}\n", problem));
+            }
+            output.push('\n');
+        }
+    }
+
     // Ambiguous
     if !result.ambiguous.is_empty() {
         output.push_str("## ⚠️  Ambiguous (multiple candidates)\n\n");
@@ -299,12 +355,17 @@ pub fn report_markdown(result: &DiffResult) -> String {
 
     // Conclusion
     output.push_str("## Status\n\n");
-    if !result.has_issues() {
-        output.push_str("✅ **No drift detected!** IR and implementation are in sync.\n");
-    } else {
+    if result.has_issues() {
         output.push_str(
             "⚠️  **Drift detected.** Review missing/ambiguous/signature mismatch symbols above.\n",
         );
+    } else if result.has_unverified() {
+        output.push_str(&format!(
+            "✅ **No drift detected**, but {} symbol(s) have unverified types.\n",
+            result.unverified.len()
+        ));
+    } else {
+        output.push_str("✅ **No drift detected!** IR and implementation are in sync.\n");
     }
 
     output
@@ -395,6 +456,26 @@ pub fn report_github_actions(result: &DiffResult) -> String {
             file_path,
             mismatch.found.range.start_line + 1,
             mismatch.found.range.start_char + 1,
+            escape_github_annotation(&msg)
+        ));
+    }
+
+    for verification in &result.unverified {
+        let file_path = verification
+            .found
+            .uri
+            .strip_prefix("file://")
+            .unwrap_or(&verification.found.uri);
+        let msg = format!(
+            "Types could not be verified for '{}': {}",
+            verification.expected.surv_name,
+            verification.problems.join("; ")
+        );
+        output.push_str(&format!(
+            "::notice file={},line={},col={}::{}\n",
+            file_path,
+            verification.found.range.start_line + 1,
+            verification.found.range.start_char + 1,
             escape_github_annotation(&msg)
         ));
     }

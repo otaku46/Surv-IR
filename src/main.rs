@@ -6,7 +6,7 @@ use std::path::Path;
 
 use survibe_parser_rs::codegen::{GitHubActionsGenerator, GitLabCIGenerator};
 use survibe_parser_rs::{
-    check_deploy_file, check_project_manifest, check_surv_file, load_ir_context, load_manifest,
+    check_deploy_file, check_project_manifest, check_surv_file, load_ir_context,
     load_project_context, parse_deploy_file, parse_surv_file, Diagnostic, HtmlExporter,
     MermaidExporter, ProjectContext, Section, SymbolKind,
 };
@@ -101,8 +101,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         "codegen" => {
             if args.len() < 3 {
-                eprintln!("Usage: surc codegen <platform> <deploy.toml>");
-                eprintln!("Platforms: github-actions, gitlab-ci, tla+");
+                eprintln!("Usage: surc codegen <platform> <file>");
+                eprintln!("Platforms: github-actions, gitlab-ci, tla+, lean");
                 std::process::exit(1);
             }
             run_codegen(&args[2..])
@@ -142,7 +142,7 @@ fn print_usage() {
     eprintln!("  diff <ir> <workspace>       Detect drift between IR and implementation (alias: diff-impl)");
     eprintln!("  skeleton <mode> <target>    Generate IR skeleton from code or code stubs from IR (alias: init-ir)");
     eprintln!("  export <type> <path>        Export Mermaid diagrams or interactive HTML");
-    eprintln!("  codegen <platform> <file>   Generate CI/CD workflow (github-actions, gitlab-ci)");
+    eprintln!("  codegen <platform> <file>   Generate CI/CD workflows or Behavior specifications");
     eprintln!("  status <subcommand>         Track module implementation status");
     eprintln!();
     eprintln!("Export types:");
@@ -186,18 +186,17 @@ enum IrKind {
 }
 
 fn detect_ir_kind(path: &Path) -> Result<IrKind, Box<dyn Error>> {
-    if load_manifest(path).is_ok() {
+    let content = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let table: toml::Table = toml::from_str(&content)
+        .map_err(|err| format!("{}: invalid TOML: {err}", path.display()))?;
+    if table.contains_key("project")
+        || table.contains_key("paths")
+        || table.contains_key("packages")
+    {
         return Ok(IrKind::Manifest);
     }
-    let raw = fs::read_to_string(path)?;
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[project]" || trimmed == "[paths]" || trimmed.starts_with("[packages.") {
-            return Ok(IrKind::Manifest);
-        }
-        if trimmed == "[deploy]" || trimmed.starts_with("[deploy.") {
-            return Ok(IrKind::Deploy);
-        }
+    if table.contains_key("deploy") {
+        return Ok(IrKind::Deploy);
     }
     Ok(IrKind::SurvFile)
 }
@@ -574,7 +573,7 @@ fn ensure_deploy_valid(
 
 fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
-        eprintln!("Usage: surc codegen <platform> <deploy.toml>");
+        eprintln!("Usage: surc codegen <platform> <file>");
         std::process::exit(1);
     }
 
@@ -582,6 +581,7 @@ fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     match platform.as_str() {
         "tla+" | "tla" => behavior_commands::run_tla_codegen(&args[1..])?,
+        "lean" => behavior_commands::run_lean_codegen(&args[1..])?,
         "github-actions" => {
             if args.len() < 2 {
                 eprintln!("Usage: surc codegen github-actions <deploy.toml>");
@@ -608,7 +608,7 @@ fn run_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
         }
         other => {
             eprintln!("Unknown platform: {}", other);
-            eprintln!("Valid platforms: github-actions, gitlab-ci, tla+");
+            eprintln!("Valid platforms: github-actions, gitlab-ci, tla+, lean");
             std::process::exit(1);
         }
     }

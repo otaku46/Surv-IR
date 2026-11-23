@@ -117,21 +117,17 @@ pub fn load_plan_target(request: &PlanRequest) -> LoadedPlanContext {
 
 fn load_ir_target(path: &Path) -> Result<(Option<Manifest>, ProjectAST), Box<dyn Error>> {
     let source = std::fs::read_to_string(path)?;
-    let _: toml::Value = toml::from_str(&source)?;
-    let headers: Vec<_> = source.lines().map(str::trim).collect();
-    let manifest_header = headers
-        .iter()
-        .any(|line| matches!(*line, "[project]" | "[paths]") || line.starts_with("[packages."));
-    if path.file_name().is_some_and(|name| name == "surv.toml") || manifest_header {
+    let table: toml::Table = toml::from_str(&source)?;
+    let manifest_target = path.file_name().is_some_and(|name| name == "surv.toml")
+        || table.contains_key("project")
+        || table.contains_key("paths")
+        || table.contains_key("packages");
+    if manifest_target {
         let manifest = load_manifest(path)?;
         let project = load_project_with_manifest(path, &manifest)?;
         return Ok((Some(manifest), project));
     }
-    if headers.iter().any(|line| {
-        matches!(*line, "[deploy]" | "[behavior]")
-            || line.starts_with("[deploy.")
-            || line.starts_with("[behavior.")
-    }) {
+    if table.contains_key("deploy") || table.contains_key("behavior") {
         return Err("Expected Structural IR or a surv.toml project".into());
     }
     let file = parse_surv_file(source.as_bytes())?;

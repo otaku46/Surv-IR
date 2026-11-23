@@ -125,7 +125,7 @@ pipeline = ["func.load"]
 }
 
 #[test]
-fn check_rejects_unterminated_values_even_in_legacy_syntax() {
+fn check_rejects_malformed_toml_values() {
     let f = Fixture::new();
     for invalid in [
         "purpose = \"\"\"unfinished",
@@ -133,17 +133,17 @@ fn check_rejects_unterminated_values_even_in_legacy_syntax() {
         "funcs = [\"func.run\"",
     ] {
         f.write("ir.toml", &format!("[mod.api]\n{invalid}\n"));
-        f.rejects(&["check", "ir.toml"], "unterminated");
-        f.rejects(&["check", "ir.toml", "--ast"], "unterminated");
+        f.rejects(&["check", "ir.toml"], "TOML parse error");
+        f.rejects(&["check", "ir.toml", "--ast"], "TOML parse error");
     }
-    f.write("ir.toml", "[func.run]\n[mod.api]\nfuncs = {\"func.run\"}\n");
+    f.write("ir.toml", "[func.run]\n[mod.api]\nfuncs = [\"func.run\"]\n");
     f.ok(&["check", "ir.toml"]);
 }
 
 #[test]
 fn status_set_round_trips_notes_and_nested_modules() {
     let f = Fixture::new();
-    for funcs in ["[]", "{\"func.greet\"}"] {
+    for funcs in ["[]", "[\"func.greet\"]"] {
         let before = format!(
             "[func.greet]\n[mod.api.child]\nfuncs = {funcs}\n[status]\nupdated_at=\"2026-01-01\"\n[status.mod.api.child]\nstate=\"todo\"\nnotes=\"old\" # retained\n"
         );
@@ -648,7 +648,7 @@ funcs = ["func.first"]
 funcs = ["func.second"]
 "#,
     );
-    f.write("src/lib.rs", "pub struct RealShared { pub id: i32 }\n");
+    f.write("src/lib.rs", "pub struct RealShared { pub id: i64 }\n");
     f.write(
         "mapping.toml",
         r#"
@@ -1108,7 +1108,7 @@ pipeline = ["func.f", "func.f"]
 }
 
 #[test]
-fn status_init_quotes_keys_and_legacy_status_is_editable() {
+fn status_init_quotes_keys_and_existing_status_is_editable() {
     let f = Fixture::new();
     f.write(
         "weird.toml",
@@ -1119,25 +1119,39 @@ fn status_init_quotes_keys_and_legacy_status_is_editable() {
     toml::from_str::<toml::Value>(&content).expect("status init must write valid TOML");
 
     f.write(
-        "legacy.toml",
-        "[mod.m]\npurpose = \"m\"\nschemas = []\nfuncs = []\npipeline = []\n\n[status]\nupdated_at = 2026-01-01\n\n[status.mod.m]\nstate = done\ncoverage = 0.5\nnotes = old note\n",
+        "existing.toml",
+        "[mod.m]\npurpose = \"m\"\nschemas = []\nfuncs = []\npipeline = []\n\n[status]\nupdated_at = \"2026-01-01\"\n\n[status.mod.m]\nstate = \"done\"\ncoverage = 0.5\nnotes = \"old note\"\n",
     );
     f.ok(&[
         "status",
         "set",
         "mod.m",
-        "legacy.toml",
+        "existing.toml",
         "--state",
         "partial",
     ]);
-    let content = fs::read_to_string(f.0.join("legacy.toml")).unwrap();
+    let content = fs::read_to_string(f.0.join("existing.toml")).unwrap();
     assert!(content.contains("state = \"partial\""), "{content}");
     f.rejects(
-        &["status", "set", "mod.m", "legacy.toml", "--coverage", "1.5"],
+        &[
+            "status",
+            "set",
+            "mod.m",
+            "existing.toml",
+            "--coverage",
+            "1.5",
+        ],
         "between 0.0 and 1.0",
     );
     f.rejects(
-        &["status", "set", "mod.m", "legacy.toml", "--state", "bogus"],
+        &[
+            "status",
+            "set",
+            "mod.m",
+            "existing.toml",
+            "--state",
+            "bogus",
+        ],
         "must be todo, skeleton, partial, done, or blocked",
     );
 }
@@ -1405,4 +1419,925 @@ root = "ir/b"
     let qualified = f.ok(&["deps", "surv.toml", "--module", "a.mod.same"]);
     assert!(qualified.contains("in a package"), "{qualified}");
     f.rejects(&["deps", "surv.toml", "--module", "mod.same"], "Ambiguous");
+}
+
+#[test]
+fn diff_compares_optional_and_vec_structurally_and_plan_sees_drift() {
+    let f = Fixture::new();
+    f.write(
+        "design.toml",
+        r#"
+[schema.Widget]
+kind = "node"
+fields = { count = "int?", sizes = "int[]", matrix = "int[]?" }
+[func.consume]
+intent = "consume"
+input = ["schema.Widget"]
+output = ["schema.Widget"]
+[mod.api]
+purpose = "api"
+schemas = ["schema.Widget"]
+funcs = ["func.consume"]
+pipeline = ["func.consume"]
+"#,
+    );
+    f.write(
+        "src/lib.rs",
+        r#"
+pub struct Widget {
+    pub count: Option<i64>,
+    pub sizes: Vec<i64>,
+    pub matrix: Option<Vec<i64>>,
+}
+pub fn consume(value: Widget) -> Widget { value }
+"#,
+    );
+
+    assert!(f
+        .ok(&["diff", "design.toml", "src", "--lang", "rust"])
+        .contains("No drift"));
+
+    f.write(
+        "design.toml",
+        r#"
+[schema.Widget]
+kind = "node"
+fields = { count = "int", sizes = "int[]", matrix = "int[]?" }
+[func.consume]
+intent = "consume"
+input = ["schema.Widget"]
+output = ["schema.Widget"]
+[mod.api]
+purpose = "api"
+schemas = ["schema.Widget"]
+funcs = ["func.consume"]
+pipeline = ["func.consume"]
+"#,
+    );
+
+    let diff = f.run(&["diff", "design.toml", "src", "--lang", "rust"]);
+    assert!(!diff.status.success(), "{diff:?}");
+    let diff = String::from_utf8_lossy(&diff.stdout);
+    assert!(diff.contains("field 'count'"), "{diff}");
+    assert!(!diff.contains("field 'sizes'"), "{diff}");
+    assert!(!diff.contains("field 'matrix'"), "{diff}");
+
+    let plan: Value = serde_json::from_str(&f.ok(&[
+        "plan",
+        "design.toml",
+        "src",
+        "--lang",
+        "rust",
+        "--format",
+        "json",
+    ]))
+    .expect("plan json");
+    let widget = plan["node_statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|status| status["fq_name"].as_str().unwrap_or("").ends_with("Widget"))
+        .expect("widget status");
+    assert_eq!(widget["impl_state"], "drifted");
+    assert!(plan["module_summaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|summary| summary["derived_state"] == "partial"));
+}
+
+#[test]
+fn diff_reports_unverified_types_separately_and_plan_does_not_mark_done() {
+    let f = Fixture::new();
+    f.write(
+        "design.toml",
+        r#"
+[schema.Widget]
+kind = "node"
+fields = { count = "int" }
+[mod.api]
+purpose = "api"
+schemas = ["schema.Widget"]
+"#,
+    );
+    f.write("src/lib.rs", "pub struct Widget { pub count: Box<i64> }\n");
+
+    let diff = f.ok(&["diff", "design.toml", "src", "--lang", "rust"]);
+    assert!(diff.contains("Unverified types"), "{diff}");
+    assert!(diff.contains("not counted as drift"), "{diff}");
+    let json: Value = serde_json::from_str(&f.ok(&[
+        "diff",
+        "design.toml",
+        "src",
+        "--lang",
+        "rust",
+        "--format",
+        "json",
+    ]))
+    .unwrap();
+    assert_eq!(json["summary"]["unverified"], 1);
+    assert_eq!(json["summary"]["has_issues"], false);
+    assert_eq!(json["summary"]["has_unverified"], true);
+    assert_eq!(json["unverified"][0]["expected"]["name"], "Widget");
+
+    f.ok(&["status", "init", "design.toml"]);
+    let plan: Value = serde_json::from_str(&f.ok(&[
+        "plan",
+        "design.toml",
+        "src",
+        "--lang",
+        "rust",
+        "--sync-status",
+        "--format",
+        "json",
+    ]))
+    .unwrap();
+    assert_eq!(plan["status"], "OK");
+    assert_eq!(plan["unverified_symbols"], 1);
+    assert_eq!(plan["unverified_unit_count"], 1);
+    assert_eq!(plan["ready_unit_count"], 0);
+    assert!(plan["node_statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|status| status["fq_name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("Widget") && status["impl_state"] == "unverified")));
+    let content = fs::read_to_string(f.0.join("design.toml")).unwrap();
+    assert!(
+        content.contains("[status.mod.api]\nstate = \"partial\""),
+        "{content}"
+    );
+}
+
+#[test]
+fn diff_uses_language_specific_scalar_mappings() {
+    let f = Fixture::new();
+    f.write(
+        "design.toml",
+        "[schema.Widget]\nkind = \"node\"\nfields = { count = \"int\" }\n",
+    );
+
+    f.write("c/widget.c", "typedef struct { int count; } Widget;\n");
+    assert!(f
+        .ok(&["diff", "design.toml", "c", "--lang", "c"])
+        .contains("No drift"));
+
+    f.write("rust/widget.rs", "pub struct Widget { pub count: i32 }\n");
+    f.rejects(
+        &["diff", "design.toml", "rust", "--lang", "rust"],
+        "type mismatch",
+    );
+
+    f.write(
+        "ts/widget.ts",
+        "export interface Widget { count: number }\n",
+    );
+    let ts = f.ok(&["diff", "design.toml", "ts", "--lang", "ts"]);
+    assert!(ts.contains("Unverified types"), "{ts}");
+}
+
+#[test]
+fn diff_resolves_type_aliases_and_rust_enums() {
+    let f = Fixture::new();
+    f.write(
+        "design.toml",
+        r#"
+[schema.Widget]
+kind = "node"
+fields = { count = "int" }
+"#,
+    );
+    f.write(
+        "src/lib.rs",
+        "pub type Int = i64;\npub struct Widget { pub count: Int }\n",
+    );
+    assert!(f
+        .ok(&["diff", "design.toml", "src", "--lang", "rust"])
+        .contains("No drift"));
+
+    f.write(
+        "design.toml",
+        r#"
+[schema.Widget]
+kind = "node"
+fields = { status = "pending|paid" }
+"#,
+    );
+    f.write(
+        "src/lib.rs",
+        "pub enum Status { Pending, Paid }\npub struct Widget { pub status: Status }\n",
+    );
+    assert!(f
+        .ok(&["diff", "design.toml", "src", "--lang", "rust"])
+        .contains("No drift"));
+
+    f.write(
+        "src/lib.rs",
+        "pub enum Status { Pending, Failed }\npub struct Widget { pub status: Status }\n",
+    );
+    f.rejects(
+        &["diff", "design.toml", "src", "--lang", "rust"],
+        "type mismatch",
+    );
+
+    f.write(
+        "src/lib.rs",
+        "#[serde(rename_all = \"snake_case\")]\npub enum Status { InProgress, Paid }\npub struct Widget { pub status: Status }\n",
+    );
+    f.write(
+        "design.toml",
+        "[schema.Widget]\nkind = \"node\"\nfields = { status = \"in_progress|paid\" }\n",
+    );
+    assert!(f
+        .ok(&["diff", "design.toml", "src", "--lang", "rust"])
+        .contains("No drift"));
+}
+
+#[test]
+fn diff_maps_any_through_manifest_type_map() {
+    let f = Fixture::new();
+    f.write(
+        "surv.toml",
+        r#"
+[project]
+name = "any"
+[paths]
+ir_root = "ir"
+[packages.app]
+root = "ir"
+"#,
+    );
+    f.write(
+        "ir/design.toml",
+        "[schema.Widget]\nkind = \"node\"\nfields = { value = \"any\" }\n",
+    );
+    f.write(
+        "src/lib.rs",
+        "pub struct Widget { pub value: serde_json::Value }\n",
+    );
+    let unmapped = f.ok(&["diff", "surv.toml", "src", "--lang", "rust"]);
+    assert!(unmapped.contains("Unverified types"), "{unmapped}");
+
+    f.write(
+        "surv.toml",
+        r#"
+[project]
+name = "any"
+[paths]
+ir_root = "ir"
+[packages.app]
+root = "ir"
+[diff.type_map]
+any = ["serde_json::Value"]
+"#,
+    );
+    assert!(f
+        .ok(&["diff", "surv.toml", "src", "--lang", "rust"])
+        .contains("No drift"));
+}
+
+#[test]
+fn diff_any_mapping_does_not_match_same_local_name_from_other_module() {
+    let f = Fixture::new();
+    f.write(
+        "surv.toml",
+        r#"
+[project]
+name = "any"
+[paths]
+ir_root = "ir"
+[packages.app]
+root = "ir"
+[diff.type_map]
+any = ["serde_json::Value"]
+"#,
+    );
+    f.write(
+        "ir/design.toml",
+        "[schema.Widget]\nkind = \"node\"\nfields = { value = \"any\" }\n[mod.api]\npurpose = \"api\"\nschemas = [\"schema.Widget\"]\n",
+    );
+    f.write(
+        "src/lib.rs",
+        "pub struct Widget { pub value: other::Value }\n",
+    );
+    let report = f.ok(&["diff", "surv.toml", "src", "--lang", "rust"]);
+    assert!(report.contains("Unverified types"), "{report}");
+
+    f.ok(&["status", "init", "ir/design.toml"]);
+    let plan: Value = serde_json::from_str(&f.ok(&[
+        "plan",
+        "surv.toml",
+        "src",
+        "--lang",
+        "rust",
+        "--sync-status",
+        "--format",
+        "json",
+    ]))
+    .unwrap();
+    assert_eq!(plan["unverified_symbols"], 1);
+    assert!(plan["node_statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|status| status["impl_state"] == "unverified"));
+}
+
+#[test]
+fn diff_named_schema_matches_qualified_rust_path() {
+    let f = Fixture::new();
+    f.write(
+        "ir/design.toml",
+        "[schema.User]\nkind = \"node\"\n[schema.Widget]\nkind = \"node\"\nfields = { user = \"schema.User\" }\n",
+    );
+    f.write(
+        "src/lib.rs",
+        "pub struct User {}\npub struct Widget { pub user: crate::User }\n",
+    );
+    let report = f.ok(&["diff", "ir/design.toml", "src", "--lang", "rust"]);
+    assert!(report.contains("No drift"), "{report}");
+}
+
+#[test]
+fn diff_named_enum_schema_compares_by_name() {
+    let f = Fixture::new();
+    f.write(
+        "design.toml",
+        "[schema.Status]\nkind = \"node\"\n[schema.Widget]\nkind = \"node\"\nfields = { status = \"schema.Status\" }\n",
+    );
+    f.write(
+        "src/lib.rs",
+        "pub enum Status { InProgress, Paid }\npub struct Widget { pub status: Status }\n",
+    );
+    let report = f.ok(&["diff", "design.toml", "src", "--lang", "rust"]);
+    assert!(
+        report.contains("No drift detected! IR and implementation are in sync"),
+        "{report}"
+    );
+}
+
+#[test]
+fn diff_handles_long_multibyte_comment_before_enum() {
+    let f = Fixture::new();
+    f.write(
+        "design.toml",
+        "[schema.Widget]\nkind = \"node\"\nfields = { status = \"in_progress|paid\" }\n",
+    );
+    let comment = format!("// {}\n", "日本語コメントです。".repeat(120));
+    let rust = format!(
+        "{comment}#[serde(rename_all = \"snake_case\")]\npub enum Status {{ InProgress, Paid }}\npub struct Widget {{ pub status: Status }}\n"
+    );
+    f.write("src/lib.rs", &rust);
+    let report = f.ok(&["diff", "design.toml", "src", "--lang", "rust"]);
+    assert!(report.contains("No drift"), "{report}");
+}
+
+const EVIDENCE_MODEL: &str = include_str!("../examples/evidence/evidence.behavior.toml");
+
+fn evidence_fixture(model: &str) -> Fixture {
+    let fixture = Fixture::new();
+    fixture.write("surv.toml", include_str!("../examples/evidence/surv.toml"));
+    fixture.write(
+        "evidence.toml",
+        include_str!("../examples/evidence/evidence.toml"),
+    );
+    fixture.write("model.behavior.toml", model);
+    fixture
+}
+
+#[test]
+fn evidence_model_reaches_both_outcomes_and_replays_the_unbound_verification() {
+    let fixture = evidence_fixture(EVIDENCE_MODEL);
+    fixture.ok(&["check", "surv.toml"]);
+    let report = verify_behavior(&fixture, &[], "PASS");
+    for (goal, check, standing) in [
+        ("bound_is_attested", "check_A", "Attested"),
+        ("unrelated_is_recorded_only", "check_B", "RecordedOnly"),
+    ] {
+        let replay = &report["reached"][goal];
+        assert_eq!(replay["version"], 1);
+        assert_eq!(replay["initial"]["checks"][check]["result"], "Pass");
+        assert_eq!(replay["initial"]["rules"]["rules_A"]["attestor"], "trusted");
+        assert_eq!(replay["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(replay["steps"][0]["args"]["verification"], check);
+        assert_eq!(replay["steps"][1]["operation"], "evaluate_evidence");
+        assert_eq!(replay["steps"][1]["args"]["evidence"], "evidence_A");
+        assert_eq!(
+            replay["steps"][1]["observations"],
+            serde_json::json!({"standing": standing})
+        );
+    }
+
+    let broken = EVIDENCE_MODEL.replacen("    and v.obligation.target.content == a.content", "", 1);
+    fixture.write("model.behavior.toml", &broken);
+    let report = verify_behavior(&fixture, &[], "FAIL");
+    let trace = &report["trace"];
+    assert_eq!(trace["violated_name"], "attested_has_bound_verification");
+    assert_eq!(
+        trace["replay"]["steps"][0]["args"]["verification"],
+        "check_B"
+    );
+    assert_eq!(
+        trace["replay"]["steps"][1]["observations"]["standing"],
+        "Attested"
+    );
+
+    let always_weak = EVIDENCE_MODEL.replace(
+        "then 'Attested' else 'RecordedOnly'",
+        "then 'RecordedOnly' else 'RecordedOnly'",
+    );
+    fixture.write("model.behavior.toml", &always_weak);
+    let report = verify_behavior(&fixture, &[], "FAIL");
+    assert_eq!(report["stop_reason"], "unreachable_goal");
+    assert_eq!(
+        report["unreached"],
+        serde_json::json!(["bound_is_attested"])
+    );
+    assert!(report["trace"].is_null());
+}
+
+#[test]
+fn evidence_table_rejects_cross_schema_lookup_and_checks_bounded_atomic_insert() {
+    let cross_schema = EVIDENCE_MODEL.replacen(
+        "capsules[evidence].artifact",
+        "capsules[verification].artifact",
+        1,
+    );
+    let fixture = evidence_fixture(&cross_schema);
+    fixture.rejects(&["check", "surv.toml"], "incompatible types Id");
+
+    fixture.write("model.behavior.toml", EVIDENCE_MODEL);
+    let report = verify_behavior(&fixture, &["--max-depth", "1"], "UNKNOWN");
+    assert_eq!(report["unreached"].as_array().unwrap().len(), 2);
+
+    let model = r#"
+[behavior.atomic]
+terminal = "done"
+observe = ["done"]
+[behavior.atomic.vars]
+done = "bool"
+[behavior.atomic.init]
+done = false
+
+[behavior.atomic.tables.capsules]
+schema = "schema.EvidenceCapsule"
+max_rows = 2
+fields = { id = "id(schema.EvidenceCapsule, first, second)", artifact = "enum(before, after)" }
+
+[behavior.atomic.action.add]
+guard = "not done and (forall c in capsules.values: false)"
+update.done = "true"
+insert.capsules = [
+  { id = "'first'", artifact = "'after'" },
+  { id = "'second'", artifact = "if capsules['first'] == None then 'before' else 'after'" },
+]
+
+[behavior.atomic.reach.both]
+expr = "done and capsules['first'].artifact == 'after' and capsules['second'].artifact == 'before'"
+"#;
+    fixture.write("model.behavior.toml", model);
+    let has_z3 = tool_available("z3");
+    let report = verify_behavior(&fixture, &[], "PASS");
+    assert_eq!(
+        report["reached"]["both"]["steps"].as_array().unwrap().len(),
+        1
+    );
+
+    if has_z3 {
+        let symbolic = verify_behavior(&fixture, &["--backend", "smt"], "PASS");
+        assert_eq!(symbolic["reached"], report["reached"]);
+    }
+
+    fixture.write(
+        "model.behavior.toml",
+        &model.replace("max_rows = 2", "max_rows = 1"),
+    );
+    let report = verify_behavior(&fixture, &[], "FAIL");
+    assert_eq!(report["trace"]["violation_kind"], "table_insert");
+    assert!(report["trace"]["violated_state"].is_null());
+    assert_eq!(report["trace"]["steps"], serde_json::json!([]));
+    assert_eq!(
+        report["trace"]["replay"]["initial"]["capsules"],
+        serde_json::json!({})
+    );
+    assert_eq!(report["trace"]["replay"]["steps"][0]["operation"], "add");
+    assert!(report["trace"]["replay"]["steps"][0]["observations"].is_null());
+
+    if has_z3 {
+        let symbolic = verify_behavior(&fixture, &["--backend", "smt"], "FAIL");
+        assert_eq!(symbolic["trace"], report["trace"]);
+    }
+
+    fixture.write(
+        "model.behavior.toml",
+        &model.replace("id = \"'second'\"", "id = \"'first'\""),
+    );
+    let report = verify_behavior(&fixture, &[], "FAIL");
+    assert!(report["trace"]["violated_expr"]
+        .as_str()
+        .unwrap()
+        .contains("duplicate row ID"));
+    if has_z3 {
+        let symbolic = verify_behavior(&fixture, &["--backend", "smt"], "FAIL");
+        assert_eq!(symbolic["trace"], report["trace"]);
+    }
+}
+
+fn tool_available(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[test]
+fn behavior_smt_reports_an_unavailable_solver() {
+    let fixture = evidence_fixture(EVIDENCE_MODEL);
+    let output = Command::new(env!("CARGO_BIN_EXE_surc"))
+        .current_dir(&fixture.0)
+        .env("PATH", &fixture.0)
+        .args([
+            "verify",
+            "surv.toml",
+            "--backend",
+            "smt",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "ERROR");
+    assert_eq!(report["stop_reason"], "solver_error");
+    assert_eq!(report["diagnostics"][0]["code"], "E_BEHAVIOR_SMT");
+}
+
+#[test]
+fn behavior_smt_matches_evidence_witnesses_and_manifest_selection() {
+    if !tool_available("z3") {
+        eprintln!("skipping Z3 integration test");
+        return;
+    }
+    let fixture = evidence_fixture(EVIDENCE_MODEL);
+    let manifest = format!(
+        "{}\n[verification]\nbackend = \"smt\"\n",
+        include_str!("../examples/evidence/surv.toml")
+    );
+    fixture.write("surv.toml", &manifest);
+    let report = verify_behavior(&fixture, &[], "PASS");
+    assert_eq!(report["backend"], "smt");
+    assert_eq!(report["stop_reason"], "exhausted");
+    let internal = verify_behavior(&fixture, &["--backend", "internal"], "PASS");
+    assert_eq!(report["reached"], internal["reached"]);
+
+    let capped = verify_behavior(&fixture, &["--max-depth", "1"], "UNKNOWN");
+    assert_eq!(capped["stop_reason"], "max_depth_reached");
+    assert_eq!(capped["unreached"].as_array().unwrap().len(), 2);
+
+    let mutant = EVIDENCE_MODEL.replacen("    and v.obligation.target.content == a.content", "", 1);
+    fixture.write("model.behavior.toml", &mutant);
+    let broken = verify_behavior(&fixture, &[], "FAIL");
+    let expected = verify_behavior(&fixture, &["--backend", "internal"], "FAIL");
+    assert_eq!(
+        broken["trace"]["violated_name"],
+        "attested_has_bound_verification"
+    );
+    assert_eq!(broken["trace"]["replay"], expected["trace"]["replay"]);
+    assert_eq!(
+        broken["trace"]["replay"]["steps"][0]["args"]["verification"],
+        "check_B"
+    );
+
+    let always_weak = EVIDENCE_MODEL.replace(
+        "then 'Attested' else 'RecordedOnly'",
+        "then 'RecordedOnly' else 'RecordedOnly'",
+    );
+    fixture.write("model.behavior.toml", &always_weak);
+    let unreached = verify_behavior(&fixture, &[], "FAIL");
+    assert_eq!(unreached["stop_reason"], "unreachable_goal");
+    assert_eq!(
+        unreached["unreached"],
+        serde_json::json!(["bound_is_attested"])
+    );
+}
+
+#[test]
+fn behavior_smt_handles_cycles_and_distinguishes_rejection_from_evaluation_error() {
+    if !tool_available("z3") {
+        eprintln!("skipping Z3 integration test");
+        return;
+    }
+    let fixture = Fixture::new();
+    let source = r#"
+[behavior.counter.vars]
+n = "int(0..2)"
+
+[behavior.counter.init]
+n = 0
+
+[behavior.counter.action.advance]
+update.n = "if n == 1 then 0 else n + 1"
+
+[behavior.counter.reach.zero]
+expr = "n == 0"
+
+[behavior.counter.invariant.safe]
+expr = "n < 2 or 170141183460469231731687303715884105727 + 1 == 0"
+"#;
+    fixture.write("model.behavior.toml", source);
+    let report = verify_behavior(&fixture, &["--backend", "smt"], "PASS");
+    assert_eq!(report["max_depth_reached"], 1);
+    assert_eq!(report["reached"]["zero"]["steps"], serde_json::json!([]));
+
+    let unsafe_source = source.replace("if n == 1 then 0 else n + 1", "n + 1");
+    fixture.write("model.behavior.toml", &unsafe_source);
+    let report = verify_behavior(&fixture, &["--backend", "smt"], "ERROR");
+    assert_eq!(report["stop_reason"], "evaluation_error");
+    assert!(report["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("precision"));
+
+    fixture.write(
+        "model.behavior.toml",
+        &unsafe_source.replace(
+            "n < 2 or 170141183460469231731687303715884105727 + 1 == 0",
+            "n <= 2",
+        ),
+    );
+    let report = verify_behavior(&fixture, &["--backend", "smt"], "FAIL");
+    let internal = verify_behavior(&fixture, &[], "FAIL");
+    assert_eq!(report["trace"]["violation_kind"], "overflow");
+    assert_eq!(report["trace"]["replay"], internal["trace"]["replay"]);
+    assert_eq!(report["trace"]["overflow_attempt"]["attempted_value"], 3);
+}
+
+#[test]
+fn behavior_lean_generates_evidence_and_checks_its_proofs() {
+    let fixture = evidence_fixture(EVIDENCE_MODEL);
+    let code = fixture.ok(&["codegen", "lean", "surv.toml"]);
+    assert!(code.contains("namespace Surv_evidence"));
+    assert!(code.contains("inductive Reachable"));
+    assert!(code.contains("def invariant_0_attested_has_bound_verification"));
+    assert!(code.contains("def goal_0_bound_is_attested"));
+    assert!(code.contains("def action_0_evaluate_evidence"));
+    assert!(code.contains("theorem certified_invariant_0_attested_has_bound_verification"));
+    assert!(code.contains("theorem certified_goal_0_bound_is_attested"));
+    assert!(code.contains("theorem certified_goal_1_unrelated_is_recorded_only"));
+    assert!(!code.contains("sorry"));
+
+    if !tool_available("lean") {
+        eprintln!("skipping Lean kernel integration test");
+        return;
+    }
+    fixture.write(
+        "AttestedProof.lean",
+        include_str!("../examples/evidence/AttestedProof.lean"),
+    );
+    let check_proof = |source: &str| {
+        fixture.write("Evidence.lean", source);
+        let output = Command::new("lean")
+            .current_dir(&fixture.0)
+            .args(["-o", "Evidence.olean", "Evidence.lean"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        Command::new("lean")
+            .current_dir(&fixture.0)
+            .env("LEAN_PATH", &fixture.0)
+            .arg("AttestedProof.lean")
+            .output()
+            .unwrap()
+    };
+
+    let generated = format!(
+        "{code}
+#print axioms Surv_evidence.certified_invariant_0_attested_has_bound_verification
+#print axioms Surv_evidence.certified_goal_0_bound_is_attested
+"
+    );
+    fixture.write("Certified.lean", &generated);
+    let output = Command::new("lean")
+        .current_dir(&fixture.0)
+        .arg("Certified.lean")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let checked = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !checked.contains("sorryAx") && !checked.contains("_native"),
+        "{checked}"
+    );
+
+    let corrupted: String = code
+        .lines()
+        .map(|line| {
+            if line.starts_with("private def certState4 ") {
+                "private def certState4 : State := initial"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    fixture.write("Certified.lean", &corrupted);
+    let output = Command::new("lean")
+        .current_dir(&fixture.0)
+        .arg("Certified.lean")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("is false"),
+        "{output:?}"
+    );
+
+    let manual = fixture.ok(&["codegen", "lean", "surv.toml", "--proof", "obligations"]);
+    let output = check_proof(&manual);
+    assert!(output.status.success(), "{output:?}");
+    let checked = String::from_utf8(output.stdout).unwrap();
+    assert!(!checked.contains("sorryAx"), "{checked}");
+    assert!(!checked.contains("_native"), "{checked}");
+
+    let mutant = EVIDENCE_MODEL.replacen("    and v.obligation.target.content == a.content", "", 1);
+    fixture.write("model.behavior.toml", &mutant);
+    let code = fixture.ok(&["codegen", "lean", "surv.toml"]);
+    assert!(code.contains("-- Proof generation: violation_found"));
+    assert!(!code.contains("theorem certified_invariant_"));
+    let output = check_proof(&code);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("is false"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn behavior_lean_keeps_witnesses_and_emits_provable_auxiliary_obligations() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "switch.behavior.toml",
+        r#"
+[behavior.switch.vars]
+flipped = "bool"
+ready = "bool"
+safe = "bool"
+
+[behavior.switch.init]
+flipped = false
+ready = true
+safe = true
+
+[behavior.switch.action.advance.update]
+flipped = "not flipped"
+safe = "ready"
+
+[behavior.switch.invariant.safe]
+expr = "safe"
+
+[behavior.switch.reach.advanced]
+expr = "flipped"
+
+[behavior.switch.reach.initial_state]
+expr = "not flipped"
+
+[behavior.switch.reach.unsafe]
+expr = "not safe"
+"#,
+    );
+    let generate = |flags: &[&str]| -> Value {
+        let mut args = vec![
+            "codegen",
+            "lean",
+            "switch.behavior.toml",
+            "--format",
+            "json",
+        ];
+        args.extend_from_slice(flags);
+        serde_json::from_str(&fixture.ok(&args)).unwrap()
+    };
+
+    let partial = generate(&["--max-depth", "0"]);
+    assert_eq!(
+        partial["proof"],
+        serde_json::json!({
+            "status": "mixed", "reason": "max_depth_reached", "witnessed_goals": 1
+        })
+    );
+    let partial = partial["lean_source"].as_str().unwrap();
+    assert!(partial.contains("theorem prove_invariant_0_safe"));
+    assert!(partial.contains(
+        "initial := ?initial, preservation := ?preservation, implication := ?implication"
+    ));
+    assert!(partial.contains("theorem certified_goal_1_initial_state"));
+    assert!(!partial.contains("theorem certified_goal_0_advanced"));
+    assert!(!partial.contains("theorem certified_invariant_0_safe"));
+    assert!(!partial.contains("sorry"));
+
+    let complete = generate(&[]);
+    assert_eq!(
+        complete["proof"],
+        serde_json::json!({"status": "certificate", "states": 2})
+    );
+    let complete = complete["lean_source"].as_str().unwrap();
+    assert!(complete.contains("theorem certified_invariant_0_safe"));
+    assert!(complete.contains("theorem certified_goal_0_advanced"));
+    assert!(complete.contains("theorem unreachable_goal_2_unsafe"));
+
+    let forced = generate(&["--proof", "obligations"]);
+    assert_eq!(
+        forced["proof"],
+        serde_json::json!({"status": "obligations", "reason": "requested"})
+    );
+    assert!(!forced["lean_source"]
+        .as_str()
+        .unwrap()
+        .contains("private def certState"));
+    assert_eq!(generate(&["--proof", "none"])["proof"]["status"], "none");
+
+    if !tool_available("lean") {
+        eprintln!("skipping Lean kernel integration test");
+        return;
+    }
+    let check = |filename: &str, source: &str| {
+        fixture.write(filename, source);
+        let output = Command::new("lean")
+            .current_dir(&fixture.0)
+            .arg(filename)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let checked = String::from_utf8(output.stdout).unwrap();
+        assert!(!checked.contains("sorryAx"), "{checked}");
+    };
+    let opened = partial
+        .lines()
+        .map(|line| {
+            if line.starts_with("-- private def aux_")
+                || line.starts_with("-- example : InvariantObligations")
+                || line.starts_with("--   refine { initial")
+            {
+                line.strip_prefix("-- ").unwrap()
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fixture.write("Interactive.lean", &opened);
+    let output = Command::new("lean")
+        .current_dir(&fixture.0)
+        .arg("Interactive.lean")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let goals = String::from_utf8(output.stdout).unwrap();
+    for case in ["initial", "preservation", "implication"] {
+        assert!(goals.contains(&format!("case {case}")), "{goals}");
+    }
+
+    check("Complete.lean", complete);
+    check(
+        "Partial.lean",
+        &format!(
+            "{partial}{}",
+            r#"
+
+namespace Surv_switch
+
+-- The property alone fails preservation on an arbitrary input state.
+example : ∃ before after : State, invariant_0_safe before = some true
+    ∧ after ∈ successors before ∧ invariant_0_safe after ≠ some true := by
+  refine ⟨⟨false, false, true⟩, ⟨true, false, false⟩, ?_⟩
+  decide
+
+private def auxiliary (s : State) : Prop :=
+  s.c1 = true ∧ s.c2 = true
+
+private theorem obligations :
+    InvariantObligations auxiliary (fun s => invariant_0_safe s = some true) := by
+  refine { initial := ?_, preservation := ?_, implication := ?_ }
+  · simp [auxiliary, initial]
+  · intro before after step facts
+    simp [successors, actions, action_0_advance] at step
+    subst after
+    exact ⟨facts.1, facts.1⟩
+  · intro s facts
+    simp [invariant_0_safe, facts.2]
+
+theorem safety {s : State} (reachable : Reachable s) :
+    invariant_0_safe s = some true :=
+  prove_invariant_0_safe obligations reachable
+
+#print axioms safety
+
+end Surv_switch
+"#
+        ),
+    );
 }

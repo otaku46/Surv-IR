@@ -1,36 +1,18 @@
-use crate::simple_toml::legacy_status_ranges;
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
-pub struct StatusDocument<'a> {
-    original: &'a str,
+pub struct StatusDocument {
     document: DocumentMut,
-    legacy_ranges: Option<Vec<Range<usize>>>,
 }
 
-impl<'a> StatusDocument<'a> {
-    pub fn parse(original: &'a str) -> Result<Self, Box<dyn Error>> {
-        let (document, legacy_ranges) = match original.parse() {
-            Ok(document) => (document, None),
-            Err(_) => {
-                let ranges = legacy_status_ranges(original)?;
-                let status: String = ranges
-                    .iter()
-                    .map(|range| &original[range.clone()])
-                    .collect();
-                let status = quote_legacy_status_values(&status);
-                (status.parse()?, Some(ranges))
-            }
-        };
+impl StatusDocument {
+    pub fn parse(original: &str) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
-            original,
-            document,
-            legacy_ranges,
+            document: original.parse()?,
         })
     }
 
@@ -39,61 +21,8 @@ impl<'a> StatusDocument<'a> {
     }
 
     pub fn finish(self) -> String {
-        let updated = self.document.to_string();
-        match self.legacy_ranges {
-            None => updated,
-            Some(ranges) if ranges.is_empty() => format!("{}\n\n{updated}", self.original),
-            Some(ranges) => {
-                let mut result = self.original.to_string();
-                for range in ranges.iter().skip(1).rev() {
-                    result.replace_range(range.clone(), "");
-                }
-                result.replace_range(ranges[0].clone(), &updated);
-                result
-            }
-        }
+        self.document.to_string()
     }
-}
-
-fn quote_legacy_status_values(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for line in input.lines() {
-        let trimmed = line.trim_start();
-        let Some((key, raw_value)) = trimmed.split_once('=') else {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        };
-        let key = key.trim();
-        if !matches!(key, "state" | "notes") {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-        let raw_value = raw_value.trim();
-        if raw_value.is_empty() || raw_value.starts_with('"') || raw_value.starts_with('\'') {
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
-        let (value, comment) = match raw_value.split_once('#') {
-            Some((value, comment)) => (value.trim(), Some(comment.trim())),
-            None => (raw_value, None),
-        };
-        let indent = &line[..line.len() - trimmed.len()];
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-        out.push_str(indent);
-        out.push_str(key);
-        out.push_str(" = \"");
-        out.push_str(&escaped);
-        out.push('"');
-        if let Some(comment) = comment {
-            out.push_str(" # ");
-            out.push_str(comment);
-        }
-        out.push('\n');
-    }
-    out
 }
 
 pub fn status_module_mut<'a>(

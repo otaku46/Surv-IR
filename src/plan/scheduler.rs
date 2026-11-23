@@ -13,6 +13,7 @@ pub enum Readiness {
     Ready,
     Blocked,
     OutOfScope,
+    Unverified,
 }
 
 impl Readiness {
@@ -22,6 +23,7 @@ impl Readiness {
             Self::Ready => "ready",
             Self::Blocked => "blocked",
             Self::OutOfScope => "out_of_scope",
+            Self::Unverified => "unverified",
         }
     }
 
@@ -62,6 +64,7 @@ pub struct ModulePlanSummary {
     pub total_symbols: usize,
     pub done_symbols: usize,
     pub drifted_symbols: usize,
+    pub unverified_symbols: usize,
     pub derived_state: String,
     pub derived_coverage: f64,
     pub out_of_scope: bool,
@@ -196,6 +199,13 @@ pub(super) fn schedule_waves_and_tracks_inner(
             Readiness::OutOfScope
         } else if !blocked_by_units.is_empty() {
             Readiness::Blocked
+        } else if workspace_checked
+            && unit
+                .member_nodes
+                .iter()
+                .any(|member| statuses[&member.fq_name].impl_state == ImplState::Unverified)
+        {
+            Readiness::Unverified
         } else if unit.member_nodes.iter().all(|member| {
             matches!(
                 statuses[&member.fq_name].impl_state,
@@ -262,6 +272,7 @@ fn module_summary(
     let mut done_funcs = 0;
     let mut drifted = 0;
     let mut ambiguous = 0;
+    let mut unverified = 0;
     for member in members {
         let state = statuses[*member].impl_state;
         if state == ImplState::OutOfScope {
@@ -276,6 +287,7 @@ fn module_summary(
         }
         drifted += usize::from(state == ImplState::Drifted);
         ambiguous += usize::from(state == ImplState::Ambiguous);
+        unverified += usize::from(state == ImplState::Unverified);
     }
     let child_summaries: Vec<&ModulePlanSummary> = children
         .iter()
@@ -295,13 +307,14 @@ fn module_summary(
     } else if out_of_scope {
         "out_of_scope"
     } else if let Some("done") = module.manual_state.as_deref() {
-        if (members.is_empty() && children.is_empty()) || (total > 0 && done == total) {
-            "done"
-        } else if total == 0
+        let children_done = total == 0
             && !child_summaries.is_empty()
             && child_summaries
                 .iter()
-                .all(|summary| summary.derived_state == "done" || summary.out_of_scope)
+                .all(|summary| summary.derived_state == "done" || summary.out_of_scope);
+        if (members.is_empty() && children.is_empty())
+            || (total > 0 && done == total)
+            || children_done
         {
             "done"
         } else {
@@ -309,7 +322,7 @@ fn module_summary(
         }
     } else if total > 0 && done == total {
         "done"
-    } else if drifted > 0 || ambiguous > 0 {
+    } else if drifted > 0 || ambiguous > 0 || unverified > 0 {
         "partial"
     } else if total == 0 && !child_summaries.is_empty() {
         if child_summaries
@@ -354,6 +367,7 @@ fn module_summary(
         total_symbols: total,
         done_symbols: done,
         drifted_symbols: drifted,
+        unverified_symbols: unverified,
         derived_state: derived_state.to_string(),
         derived_coverage,
         out_of_scope,

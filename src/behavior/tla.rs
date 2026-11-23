@@ -11,7 +11,18 @@ pub struct TlaPlusSpec {
     pub cfg_source: String,
 }
 
-pub fn generate_tla_spec(model: &NormalizedBehaviorModel) -> TlaPlusSpec {
+pub fn generate_tla_spec(model: &NormalizedBehaviorModel) -> Result<TlaPlusSpec, String> {
+    if model
+        .domains
+        .iter()
+        .any(|domain| matches!(domain.domain_kind, "table" | "id"))
+        || model.actions.iter().any(|action| !action.args.is_empty())
+        || !model.goals.is_empty()
+    {
+        return Err(
+            "tables, typed IDs, action arguments, and reach goals require surc verify".into(),
+        );
+    }
     let module_name = format!("Surv_{}", safe_name(&model.name));
     let vars: BTreeMap<_, _> = model
         .domains
@@ -163,11 +174,11 @@ pub fn generate_tla_spec(model: &NormalizedBehaviorModel) -> TlaPlusSpec {
         cfg_source.push_str("CHECK_DEADLOCK FALSE\n");
     }
     tla_source.push_str("\n====\n");
-    TlaPlusSpec {
+    Ok(TlaPlusSpec {
         module_name,
         tla_source,
         cfg_source,
-    }
+    })
 }
 
 fn safe_name(name: &str) -> String {
@@ -192,7 +203,11 @@ impl Renderer<'_> {
                     .enums
                     .get(value.as_str())
                     .map_or_else(|| serde_json::to_string(value).unwrap(), usize::to_string),
+                _ => unreachable!("record values require the internal backend"),
             },
+            ExprAST::Lookup { .. } | ExprAST::Field { .. } | ExprAST::Quantifier { .. } => {
+                unreachable!("table expressions require the internal backend")
+            }
             ExprAST::Variable { name } => self.vars[name.as_str()].clone(),
             ExprAST::Not { arg } => format!("(~{})", self.render(arg)),
             ExprAST::Neg { arg } => format!("(-{})", self.render(arg)),

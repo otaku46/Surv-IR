@@ -10,3 +10,4 @@ ir_root = "."
 [files]
 "blog_sample_user_service.toml" = {description = "User service with email notifications"}
 "auth.toml" = {description = "Authentication module"}
+"evidence/evidence.toml" = {description = "Finite evidence attestation model"}

@@ -16,6 +16,9 @@
 6. [式言語（Expression Language）の要件](#6-式言語expression-languageの要件)
 7. [Surv IR（Structural IR）との統合要件](#7-surv-irstructural-irとの統合要件)
 8. [検証エンジンの要件](#8-検証エンジンの要件)
+   - [有限レコード表と再生トレース](#84-有限レコード表と再生トレース)
+   - [SMT 検証と Lean コード生成](#85-smt-検証と-lean-コード生成)
+   - [Lean の有限証明と証明義務](#86-lean-の有限証明と証明義務)
 9. [非機能要件](#9-非機能要件)
 10. [開発フェーズ](#10-開発フェーズ)
 11. [MVP（v0.1）受け入れ基準](#11-mvpv01受け入れ基準)
@@ -545,6 +548,84 @@ Counterexample Trace:
     order_status  = 'paid'
     payment_count = 2   <-- violates: payment_count <= 1
 ```
+
+---
+
+### 8.4 有限レコード表と再生トレース
+
+実行可能なモデルと gj 用の再生アダプターは [examples/evidence](examples/evidence/README.md) にある。
+
+```toml
+[behavior.example]
+terminal = "exists r in records.values: r.id == 'row_A'"
+
+[behavior.example.tables.records]
+schema = "schema.Record"
+max_rows = 1
+fields = { id = "id(schema.Record, row_A)", result = "enum(Pass, Fail)" }
+
+[behavior.example.action.record]
+operation = "record_result"
+args = { row_id = { type = "id(schema.Record, row_A)", value = "row_A" } }
+guard = "records[row_id] == None"
+insert.records = [{ id = "row_id", result = "'Pass'" }]
+
+[behavior.example.reach.recorded]
+expr = "exists r in records.values: r.result == 'Pass'"
+```
+
+- `tables.<name>` は Structural IR のスキーマを参照し、`fields` に検証で使うフィールドの有限な定義域を宣言する。`id` は表のスキーマに対応する特別なキーで、Structural IR 側では省略できる。ほかのフィールドはスキーマに存在するパスを指定する。ネストしたスキーマのフィールドは `"obligation.target"` のようなドット付きキーで表す。各定義域には `bool`、`int(min..max)`、`enum(...)`、`id(schema.Name, ...)` が使える。ハッシュや自由文は列挙値で抽象化できる。
+- `initial` は初期レコードの配列で、省略時は空。各行は宣言されたフィールドをすべて持つ。キーの重複、行数上限超過、定義域外の値は静的エラーになる。ID の型は解決済みスキーマで決まる。同じ表に存在しない ID も参照として保持できる。
+- `table[key]` はキー型を検査し、対応する行または `None` を返す。フィールドを読む前に `table[key] != None and ...` 等で存在を確認する。フィールドアクセス時に行がなければ評価エラーになる。量化式 `forall r in table.values: expr` と `exists r in table.values: expr` の本体は真偽値で、括弧か式の末尾までを範囲とする。空表では `forall` は真、`exists` は偽。
+- `args` はアクションごとの名前付き引数で、有限型と具体値を宣言する。複数の引数候補は同じ `operation` を持つ別々のアクションで記述する。`operation` の既定値はアクション名。引数はガードと更新・挿入の式から参照できる。
+- `insert.<table>` はフィールド式を持つ行の配列。すべての右辺を更新前の状態で評価し、`update` と各表への追加を一つの遷移として適用する。重複キー、上限超過、定義域外の挿入は `table_insert` 違反となり、試みた操作の部分的な更新は状態に現れない。
+
+`reach.<name>.expr` は到達すべき状態を表す。BFS は初期状態を含めて各ゴールへの最短トレースを記録し、安全性の検査を続ける。探索を完走した時点で未到達のゴールがあれば `FAIL`（`unreachable_goal`）を返す。上限で未探索状態が残った場合は `UNKNOWN` を返す。
+
+`surc verify --format json` では、反例の `trace.replay` と、到達したゴールごとの `reached.<name>` が同じ形式を使う。未到達のゴール名は `unreached` に含まれる。再生トレースの契約は次のとおり。
+
+| キー | 値 |
+| --- | --- |
+| `version` | 再生形式のバージョン。初版は `1`。 |
+| `initial` | 初期状態。表は記号 ID をキーとする行のオブジェクト。整数と真偽値は JSON の数値と真偽値、列挙値と ID は文字列。 |
+| `steps[]` | 実行順に並ぶ操作。`action` はモデル上のケース名、`operation` は再生する操作名、`args` は名前付き引数、`refs` は Structural IR への参照。 |
+| `steps[].observations` | 更新後の観測値。`observe = ["standing"]` のように指定したスカラー状態変数だけを比較する。試行した遷移が失敗した場合は `null`。 |
+
+アダプターは時刻や実 ID を組み立て、記号 ID と対応づけてアプリケーションを呼び出す。`ref` はメタデータとして出力される。表、型付き ID、引数、到達ゴールを使うモデルは内部検証器と SMT バックエンドが扱う。
+
+---
+
+### 8.5 SMT 検証と Lean コード生成
+
+```sh
+surc verify surv.toml --backend smt --max-depth 20 --format json
+surc codegen lean surv.toml --behavior model > Model.lean
+lean Model.lean
+```
+
+`surc verify` の既定は `internal`（BFS）。`[verification].backend = "smt"` でプロジェクトの既定を指定でき、`--backend internal|smt` が上書きする。SMT バックエンドは PATH 上の `z3` と SMT-LIB で通信する。問い合わせごとの Z3 タイムアウトは 10 秒。`max_depth` は両バックエンドに、`max_states` は具体状態を列挙する BFS に適用する。
+
+SMT は深さを増やしながら初期状態からの単純路を調べる。各状態の不変条件とデッドロック、行数制限や値域を破る更新、到達ゴールを同じ遷移意味論で判定する。取得したアクション列を Rust 評価器で再生し、反例またはゴールの `ReplayTrace` を出力する。同じ長さの候補が複数あるときはソルバーが一つを選ぶ。
+
+最短経路は単純路であるため、より長い単純路が存在しないと判定できれば探索は完了する。上限までにこの判定ができない場合やソルバーが `unknown` を返した場合は `UNKNOWN`。JSON の `backend` は `"smt"` を、`max_depth_reached` は処理した最大深さを示す。具体状態を列挙しないので `explored_states` と `pending_states` は 0 を返す。実行環境や通信の異常は `E_BEHAVIOR_SMT`（`ERROR`）になる。
+
+`surc codegen lean` は Lean 4 の `Std` を使うソースを生成する。`--format json` では名前空間とソースを返す。出力には初期状態、終端判定、アクションの結果、不変条件、到達ゴール、到達可能性の帰納的定義と帰納法の定理が含まれる。不変条件と到達ゴールに対する証明や証明義務の出力は次節で定義する。
+
+両機能は型検査後のモデルから同じ式と遷移を生成する。表の各 ID を存在フラグ付きの行に展開し、量化を有限の積・和に変換する。短絡評価、参照先の欠損、整数演算の精度限界は式の定義可能性として表す。Lean の証明はこの生成モデルについて成り立つ。アプリケーションとの対応には再生テストを使う。
+
+---
+
+### 8.6 Lean の有限証明と証明義務
+
+`surc codegen lean` は既定の `--proof auto` で、型検査済みモデルを内部 BFS に渡す。`--max-depth` と `--max-states` はこの探索に適用する。プロジェクトの検証バックエンドに SMT を指定している場合も、証明生成に使う有限状態集合と経路は BFS から得る。
+
+- **探索を完走した場合**は、到達状態集合を Lean に出力する。Lean は初期状態が集合に属すること、成功遷移で集合が閉じていること、全要素で各不変条件が成り立つことを検査する。帰納法により `certified_invariant_*` を導く。完走しても到達できなかったゴールには、集合全体でゴールが偽であることを検査して `unreachable_goal_*` を出力する。
+- **具体的な到達経路を得た場合**は、各ステップと最終状態の観測を Lean で検査し、`certified_goal_*` を出力する。この証明は探索が途中で止まっても使える。
+- **必要な探索結果を得られなかった場合**は、停止理由と未証明の性質を出力する。不変条件には補助不変条件 `aux : State → Prop` を引数とする `InvariantObligations` と、その証明を受け取る `prove_invariant_*` を用意する。義務は `aux initial`、成功遷移による `aux` の保存、`aux` から目的の不変条件への含意の三つ。未判定の到達ゴールは証人となる状態と到達証明を要求する命題として出力する。
+
+有限の計算は Lean の `by decide` で検査する。コード生成に成功したら、生成ファイルを `lean` に渡して証明を検査する。証明義務のテンプレートはコメントで出力する。利用者はテンプレートを証明ファイルへ移し、補助不変条件を書いて三つのゴールを埋める。`--proof obligations` は探索を省略してこのモードを選び、`--proof none` はモデル定義と汎用の帰納法だけを生成する。
+
+`--format json` の `proof.status` は、閉包を確認できた探索結果の `certificate`、証明義務のみの `obligations`、到達証人と証明義務を含む `mixed`、到達証人で全要求を満たした `witnesses`、定義のみの `none` のいずれか。これはコード生成段階の状態であり、Lean での検査結果は生成ファイルのコンパイルで確認する。大きな有限集合では、閉包検査の計算量に応じて Lean の検査時間が増える。
 
 ---
 

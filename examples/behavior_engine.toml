@@ -157,7 +157,7 @@ impl.path = "behavior::model"
 [schema.ExplorerConfig]
 kind = "node"
 role = "config"
-fields = { max_states = "usize", max_depth = "usize", check_deadlock = "bool" }
+fields = { backend = "VerificationBackend", max_states = "usize", max_depth = "usize", check_deadlock = "bool" }
 impl.lang = "rust"
 impl.path = "behavior::model"
 
@@ -371,7 +371,7 @@ impl.path = "behavior::tla"
 
 [mod.behavior_engine]
 purpose = "End-to-end Behavior IR compilation, stage-by-stage static error short-circuiting, level-synchronous BFS model checking, and TLA+ codegen"
-submods = ["frontend", "explorer", "tla_backend"]
+submods = ["frontend", "explorer", "tla_backend", "symbolic"]
 schemas = [
     "schema.BehaviorSource",
     "schema.ProjectContext",
@@ -498,3 +498,48 @@ notes = "Phase 1 MVP: Two-phase per-depth BFS, structured valuations, TraceStep 
 state = "done"
 coverage = 1.0
 notes = "Phase 2: TLA+ codegen from NormalizedBehaviorModel"
+
+[schema.SymbolicBehavior]
+kind = "node"
+role = "value"
+fields = { symbols = "Map<string,int>", columns = "Column[]", terms = "Terms", terminal = "Checked", invariants = "Checked[]", goals = "Map<string,Checked>", actions = "Action[]" }
+
+[schema.LeanSpec]
+kind = "node"
+role = "artifact"
+fields = { namespace = "string", lean_source = "string", proof = "LeanProof" }
+
+[func.lowerSymbolicBehavior]
+intent = "Lower a normalized Behavior to shared Boolean and integer terms"
+input = ["schema.NormalizedBehaviorModel"]
+output = ["schema.SymbolicBehavior"]
+design_notes = "Represent each finite table by sorted ID slots with presence bits, canonical absent fields and bounded cardinality. Carry definedness through lookup, checked i128 arithmetic and short-circuit operators. Each action has distinct guard, evaluation error, rejected update and successful next-state terms. Evaluate all right-hand sides against the pre-state."
+
+[func.solveSymbolicBehavior]
+intent = "Find shortest violations and reach witnesses using incremental Z3"
+input = ["schema.SymbolicBehavior"]
+output = ["schema.ExplorationOutcome"]
+design_notes = "Check simple paths in increasing depth. Prove completeness when no longer simple path exists. If a limit prevents that check, return UNKNOWN. Replay solver action choices through the Rust evaluator to validate results and produce ReplayTrace."
+
+[schema.LeanEvidence]
+kind = "node"
+role = "value"
+fields = { states = "StateValue[][]", parents = "Option<usize>[]", goals = "Map<string,usize>", stop_reason = "string" }
+
+[func.collectLeanEvidence]
+intent = "Collect BFS states and witness paths for Lean proof generation"
+input = ["schema.NormalizedBehaviorModel"]
+output = ["schema.LeanEvidence"]
+design_notes = "Use the existing BFS and its limits. A completed search supplies a finite closed set. Partial search may still supply concrete goal witnesses. Record the stop reason and keep unfinished obligations explicit."
+
+[func.generateLean]
+intent = "Generate Lean model definitions, checked finite proofs, and interactive proof obligations"
+input = ["schema.SymbolicBehavior", "schema.LeanEvidence"]
+output = ["schema.LeanSpec"]
+design_notes = "Emit concrete State, initial, terminal, goals, invariants, typed action outcomes and Reachable. Check closure, predicate truth and reach witness steps in Lean without admissions. For unfinished invariants emit a proof obligation for a chosen auxiliary predicate with separate initial, transition preservation and implication goals."
+
+[mod.behavior_engine.symbolic]
+purpose = "Shared semantics for SMT verification and Lean code generation"
+schemas = ["schema.NormalizedBehaviorModel", "schema.SymbolicBehavior", "schema.ExplorationOutcome", "schema.LeanEvidence", "schema.LeanSpec"]
+funcs = ["func.lowerSymbolicBehavior", "func.solveSymbolicBehavior", "func.collectLeanEvidence", "func.generateLean"]
+pipeline = [{ parallel = ["func.lowerSymbolicBehavior -> func.solveSymbolicBehavior", "func.collectLeanEvidence -> func.generateLean"] }]

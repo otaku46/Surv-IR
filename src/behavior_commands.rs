@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use survibe_parser_rs::behavior::{self, BehaviorDiagnostic, FrontendOutcome};
+use survibe_parser_rs::behavior::{self, BehaviorDiagnostic, FrontendOutcome, VerificationBackend};
 
 struct VerifyOptions {
     path: PathBuf,
@@ -9,6 +9,7 @@ struct VerifyOptions {
     json: bool,
     max_states: Option<usize>,
     max_depth: Option<usize>,
+    backend: Option<VerificationBackend>,
 }
 
 impl VerifyOptions {
@@ -20,13 +21,19 @@ impl VerifyOptions {
             json: false,
             max_states: None,
             max_depth: None,
+            backend: None,
         };
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             if arg.starts_with('-') {
                 if !matches!(
                     arg.as_str(),
-                    "--manifest" | "--behavior" | "--format" | "--max-states" | "--max-depth"
+                    "--manifest"
+                        | "--behavior"
+                        | "--format"
+                        | "--max-states"
+                        | "--max-depth"
+                        | "--backend"
                 ) {
                     return Err(format!("unknown Behavior option '{arg}'").into());
                 }
@@ -52,6 +59,13 @@ impl VerifyOptions {
                         options.max_states = Some(limit);
                     }
                     "--max-depth" => options.max_depth = Some(value.parse()?),
+                    "--backend" => {
+                        options.backend = Some(match value.as_str() {
+                            "internal" => VerificationBackend::Internal,
+                            "smt" => VerificationBackend::Smt,
+                            _ => return Err("--backend must be internal or smt".into()),
+                        });
+                    }
                     _ => unreachable!(),
                 }
             } else if options.path.as_os_str().is_empty() {
@@ -100,6 +114,9 @@ impl VerifyOptions {
         }
         for outcome in &mut outcomes {
             if let Some(model) = &mut outcome.model {
+                if let Some(backend) = self.backend {
+                    model.config.backend = backend;
+                }
                 if let Some(limit) = self.max_states {
                     model.config.max_states = limit;
                 }
@@ -117,7 +134,7 @@ pub fn run_verify(args: &[String]) -> Result<i32, Box<dyn Error>> {
         .iter()
         .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
     {
-        println!("Usage: surc verify <file.behavior.toml|surv.toml> [--manifest <path>] [--behavior <name>] [--format text|json] [--max-states <n>] [--max-depth <n>]");
+        println!("Usage: surc verify <file.behavior.toml|surv.toml> [--manifest <path>] [--behavior <name>] [--format text|json] [--backend internal|smt] [--max-states <n>] [--max-depth <n>]");
         return Ok(0);
     }
     let options = VerifyOptions::parse(args)?;
@@ -224,7 +241,7 @@ pub fn run_tla_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
         .into_iter()
         .filter_map(|outcome| outcome.model)
         .map(|model| behavior::generate_tla_spec(&model))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     if format == "json" && specs.len() != 1 {
         println!("{}", serde_json::to_string_pretty(&specs)?);
         return Ok(());
@@ -237,6 +254,53 @@ pub fn run_tla_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
         "cfg" => print!("{}", spec.cfg_source),
         "json" => println!("{}", serde_json::to_string_pretty(&spec)?),
         _ => print!("{}", spec.tla_source),
+    }
+    Ok(())
+}
+
+pub fn run_lean_codegen(args: &[String]) -> Result<(), Box<dyn Error>> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        println!("Usage: surc codegen lean <file.behavior.toml|surv.toml> [--manifest <path>] [--behavior <name>] [--format text|json] [--proof auto|obligations|none] [--max-states <n>] [--max-depth <n>]");
+        return Ok(());
+    }
+    let mut proof = behavior::LeanProofMode::Auto;
+    let mut common = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--proof" {
+            proof = match args.next().map(String::as_str) {
+                Some("auto") => behavior::LeanProofMode::Auto,
+                Some("obligations") => behavior::LeanProofMode::Obligations,
+                Some("none") => behavior::LeanProofMode::None,
+                _ => return Err("--proof must be auto, obligations, or none".into()),
+            };
+        } else {
+            common.push(arg.clone());
+        }
+    }
+    let options = VerifyOptions::parse(&common)?;
+    let outcomes = options.load();
+    let issues = diagnostics(outcomes.iter().flat_map(|outcome| &outcome.diagnostics));
+    if issues.iter().any(|issue| issue.severity == "error") {
+        return super::print_diagnostics(
+            &issues,
+            "No Behavior issues found",
+            "Behavior diagnostics",
+        );
+    }
+    let specs: Vec<_> = outcomes
+        .into_iter()
+        .filter_map(|outcome| outcome.model)
+        .map(|model| behavior::generate_lean_spec_with_proof(&model, proof))
+        .collect::<Result<_, _>>()?;
+    match specs.as_slice() {
+        [spec] if options.json => println!("{}", serde_json::to_string_pretty(spec)?),
+        [spec] => print!("{}", spec.lean_source),
+        _ if options.json => println!("{}", serde_json::to_string_pretty(&specs)?),
+        _ => return Err("select one Behavior using --behavior, or request --format json".into()),
     }
     Ok(())
 }

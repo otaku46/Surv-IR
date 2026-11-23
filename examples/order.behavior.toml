@@ -1,0 +1,31 @@
+# Behavior IR example: order payment/cancel state machine
+# Run: surc verify examples/order.behavior.toml
+
+[behavior.order]
+terminal = "status in {'paid', 'cancelled'}"
+
+[behavior.order.vars]
+status = "enum(pending, paid, cancelled)"
+x = "int(0..3)"
+y = "int(0..3)"
+
+[behavior.order.init]
+status = "pending"
+x = 0
+y = 1
+
+[behavior.order.action.pay]
+guard = "status == 'pending' and not false"
+update = { status = "'paid'", x = "y", y = "x" }
+
+[behavior.order.action.cancel]
+guard = "status == 'pending'"
+
+[behavior.order.action.cancel.update]
+status = "'cancelled'"
+
+[behavior.order.invariant.atomic_swap]
+expr = "status == 'paid' => (x == 1 and y == 0)"
+
+[behavior.order.invariant.range]
+expr = "(if status == 'pending' then 1 else 2) * (x + y) <= 2"

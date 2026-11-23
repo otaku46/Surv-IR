@@ -226,6 +226,16 @@ impl StaticAnalyzer {
                     build_impl_path(module_path.as_deref(), container.as_deref(), &name);
                 let visibility = extract_visibility(def_text);
                 let is_test = is_test_symbol(path, &content, &node, &name);
+                let alias_target = if kind_str == "Type" {
+                    extract_alias_target(def_text)
+                } else {
+                    None
+                };
+                let (enum_variants, enum_variants_known) = if kind_str == "Enum" {
+                    extract_enum_variants(def_text, &node, &content)
+                } else {
+                    (Vec::new(), false)
+                };
 
                 if lang == "rust" && node.kind() == "trait_item" {
                     symbols.extend(extract_trait_methods(
@@ -257,6 +267,9 @@ impl StaticAnalyzer {
                     is_test,
                     is_method,
                     detail: None,
+                    alias_target,
+                    enum_variants,
+                    enum_variants_known,
                     signature,
                     fields,
                     fields_known,
@@ -399,6 +412,9 @@ fn extract_trait_methods(
             is_test: is_test_symbol(path, content, &child, method_name),
             is_method: true,
             detail: Some("trait signature".to_string()),
+            alias_target: None,
+            enum_variants: Vec::new(),
+            enum_variants_known: false,
             signature,
             fields: BTreeMap::new(),
             fields_known: false,
@@ -513,6 +529,9 @@ fn extract_c_functions(
             is_test: name.starts_with("test_") || name.ends_with("_test"),
             is_method: false,
             detail: None,
+            alias_target: None,
+            enum_variants: Vec::new(),
+            enum_variants_known: false,
             signature: Some(signature),
             fields: BTreeMap::new(),
             fields_known: false,
@@ -570,6 +589,9 @@ fn extract_c_structs(
             is_test: false,
             is_method: false,
             detail: Some(format!("struct {}", name)),
+            alias_target: None,
+            enum_variants: Vec::new(),
+            enum_variants_known: false,
             signature: None,
             fields,
             fields_known: true,
@@ -622,6 +644,9 @@ fn extract_zig_functions(
             is_test: name.starts_with("test") || name.ends_with("Test"),
             is_method: false,
             detail: None,
+            alias_target: None,
+            enum_variants: Vec::new(),
+            enum_variants_known: false,
             signature: Some(FunctionSignature {
                 parameters: parse_zig_parameters(params),
                 return_type: if return_type.is_empty() || return_type == "void" {
@@ -687,6 +712,9 @@ fn extract_zig_types(
             is_test: false,
             is_method: false,
             detail: None,
+            alias_target: None,
+            enum_variants: Vec::new(),
+            enum_variants_known: false,
             signature: None,
             fields,
             fields_known: kind == "Struct",
@@ -864,6 +892,153 @@ fn extract_visibility(def_text: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn extract_alias_target(def_text: &str) -> Option<String> {
+    let (_, target) = def_text.split_once('=')?;
+    let target = target.trim().trim_end_matches(';').trim();
+    if target.is_empty() {
+        None
+    } else {
+        Some(target.to_string())
+    }
+}
+
+fn extract_enum_variants(
+    def_text: &str,
+    node: &tree_sitter::Node,
+    source: &str,
+) -> (Vec<String>, bool) {
+    let Some(body) = extract_first_balanced_body(def_text) else {
+        return (Vec::new(), false);
+    };
+    let rename_all = enum_rename_all(def_text, node, source);
+    let body = strip_line_comments(&body);
+    let mut variants = Vec::new();
+    let mut known = true;
+
+    for segment in split_top_level(&body, ',') {
+        let mut segment = segment.trim();
+        let mut renamed = None;
+        while segment.starts_with("#[") {
+            let Some(end) = segment.find(']') else {
+                break;
+            };
+            let attribute = &segment[2..end];
+            if let Some(name) = serde_rename(attribute) {
+                renamed = Some(name);
+            }
+            segment = segment[end + 1..].trim();
+        }
+        if segment.is_empty() {
+            continue;
+        }
+        let has_payload = segment.contains('(') || segment.contains('{');
+        let name = segment
+            .split(|ch: char| ch == '(' || ch == '{' || ch == '=' || ch.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() {
+            continue;
+        }
+        let explicit_value = segment.split_once('=').and_then(|(_, value)| {
+            let value = value.trim();
+            if value.starts_with('"') && value.ends_with('"')
+                || value.starts_with('\'') && value.ends_with('\'')
+            {
+                Some(value[1..value.len() - 1].to_string())
+            } else {
+                None
+            }
+        });
+        let effective = renamed
+            .or(explicit_value)
+            .unwrap_or_else(|| apply_rename_all(name, rename_all.as_deref()));
+        variants.push(normalize_variant(&effective));
+        if has_payload {
+            known = false;
+        }
+    }
+
+    let known = known && !variants.is_empty();
+    (variants, known)
+}
+
+fn enum_rename_all(def_text: &str, node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let re = Regex::new(r#"rename_all\s*=\s*"([^"]+)""#).ok()?;
+    let mut attributes = Vec::new();
+    let mut sibling = node.prev_sibling();
+    while let Some(previous) = sibling {
+        match previous.kind() {
+            "attribute_item" => {
+                if let Ok(text) = previous.utf8_text(source.as_bytes()) {
+                    attributes.push(text.to_string());
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        sibling = previous.prev_sibling();
+    }
+
+    if attributes.is_empty() {
+        return re
+            .captures(def_text)
+            .and_then(|captures| captures.get(1))
+            .map(|value| value.as_str().to_string());
+    }
+
+    let mut found = None;
+    for attribute in attributes.iter().rev() {
+        if let Some(captures) = re.captures(attribute) {
+            if let Some(value) = captures.get(1) {
+                found = Some(value.as_str().to_string());
+            }
+        }
+    }
+    found
+}
+
+fn serde_rename(attribute: &str) -> Option<String> {
+    let re = Regex::new(r#"\brename\s*=\s*"([^"]+)""#).ok()?;
+    re.captures(attribute)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().to_string())
+}
+
+fn apply_rename_all(name: &str, rule: Option<&str>) -> String {
+    match rule {
+        Some("snake_case" | "kebab-case" | "SCREAMING_SNAKE_CASE" | "lowercase" | "UPPERCASE") => {
+            to_snake_case(name)
+        }
+        _ => name.to_string(),
+    }
+}
+
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    let mut previous_lower_or_digit = false;
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() && previous_lower_or_digit {
+            result.push('_');
+        }
+        result.push(ch.to_ascii_lowercase());
+        previous_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    }
+    result
+}
+
+fn normalize_variant(name: &str) -> String {
+    let mut normalized = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            normalized.push(ch.to_ascii_lowercase());
+        } else if !normalized.is_empty() && !normalized.ends_with('_') {
+            normalized.push('_');
+        }
+    }
+    normalized.trim_matches('_').to_string()
 }
 
 fn is_test_symbol(path: &Path, content: &str, node: &tree_sitter::Node, name: &str) -> bool {

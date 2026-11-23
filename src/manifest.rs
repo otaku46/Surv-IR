@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
@@ -11,6 +11,21 @@ pub struct Manifest {
     pub files: HashMap<String, FileEntry>,
     #[serde(default)]
     pub packages: HashMap<String, PackageSection>,
+    #[serde(default)]
+    pub diff: DiffConfig,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DiffConfig {
+    /// Explicit implementation types for semantic IR types.
+    ///
+    /// Example:
+    /// ```toml
+    /// [diff.type_map]
+    /// any = ["Any", "serde_json::Value"]
+    /// ```
+    #[serde(default)]
+    pub type_map: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

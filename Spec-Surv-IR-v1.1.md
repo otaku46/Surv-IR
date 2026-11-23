@@ -442,11 +442,16 @@ depends = ["common", "backend"]
 # Optional: explicit file list. When present, only these files are loaded.
 [files]
 "design/common/auth.toml" = { description = "Shared auth types" }
+
+# Optional: explicit implementation types for semantic IR types.
+[diff.type_map]
+any = ["Any", "serde_json::Value"]
 ```
 
 - **`[project]`**: Project name and optional description.
 - **`[paths].ir_root`**: Base directory scanned recursively for `.toml` IR files.
 - **`[files]`**: Optional explicit list of IR files, relative to `ir_root` (or the manifest directory as a fallback). `description` is informational.
+- **`[diff.type_map]`**: Maps IR semantic types to implementation types. `any` has no default meaning; without an entry, an `any` comparison is reported as `unverified`, not drift. Qualified targets are matched by their full path, so `any = ["serde_json::Value"]` does not accept `other::Value`; unqualified targets match only unqualified implementation types.
 - **`[packages.<name>]`**:
   - `root`: Directory path (relative to `surv.toml`) owning this package's IR files.
   - `namespace`: Default namespace for files in this package.
@@ -491,6 +496,7 @@ When resolving a reference (`schema.*`, `func.*`, or `mod.*`):
 1. **Missing / Extra / Ambiguous Symbols**: Matches IR symbols against source code via static analysis (Tree-sitter for Rust/TypeScript, built-in analyzers for C/Zig) or LSP (`--strategy lsp`).
 2. **Function Signature Comparison**: Verifies parameter count and input/output schema compatibility against implementation function signatures.
 3. **Schema Field Comparison**: Verifies struct/interface fields (missing fields, extra fields, and field type mismatches).
+4. **Type Comparison**: Compares `?`/`[]` with `Option`/`Vec` structurally, expands uniquely resolvable Rust/TypeScript type aliases, compares named schema references by name, and maps inline unions to enum variants (including serde renames). Unknown aliases, enum variants, payload enums, and unmapped `any` types are reported as `unverified`, not drift. `any` mappings are declared in `surv.toml` under `[diff.type_map]`.
 
 ---
 

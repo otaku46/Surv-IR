@@ -1,8 +1,11 @@
 use super::model::{BehaviorDiagnostic, BehaviorFileAST};
 use crate::imports::parse_imports_with_alias;
 use crate::loader::{collect_ir_files, load_project_with_manifest};
+use crate::project::ProjectAST;
 use crate::project_checker::prepare_project;
+use crate::symbol::{check_package_dependency, reference_candidates};
 use crate::{FileImportContext, ImportDecl, Manifest, PackageAssignment, SurvFile, SymbolTable};
+use crate::{Section, SymbolKind};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -40,8 +43,62 @@ pub struct ProjectContext {
     pub verification: BehaviorVerificationConfig,
     pub project_ast_loaded: bool,
     pub symbol_table: SymbolTable,
+    structural: Option<ProjectAST>,
+    structural_contexts: Vec<FileImportContext>,
     pub(super) manifest_path: Option<PathBuf>,
     pub(super) diagnostics: Vec<BehaviorDiagnostic>,
+}
+
+impl ProjectContext {
+    pub(super) fn check_field_path(&self, schema: &str, path: &str) -> Result<(), String> {
+        let mut entry = self
+            .symbol_table
+            .entries
+            .iter()
+            .find(|entry| entry.fq_name == schema)
+            .ok_or("missing schema")?;
+        let mut parts = path.split('.').peekable();
+        while let Some(part) = parts.next() {
+            let (file, context) = self
+                .structural
+                .as_ref()
+                .and_then(|project| {
+                    project
+                        .files
+                        .iter()
+                        .zip(&self.structural_contexts)
+                        .find(|((file, _), _)| *file == entry.file)
+                })
+                .ok_or("missing Structural IR schema source")?;
+            let ty = file
+                .1
+                .sections
+                .iter()
+                .find_map(|section| match section {
+                    Section::Schema(schema) if schema.name == entry.local_name => {
+                        schema.fields.get(part)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| format!("unknown Structural IR field '{part}' in path '{path}'"))?;
+            if parts.peek().is_some() {
+                let matches =
+                    reference_candidates(&self.symbol_table, SymbolKind::Schema, ty, context);
+                let [nested] = matches.as_slice() else {
+                    return Err(format!(
+                        "field '{part}' in '{path}' must reference a record schema"
+                    ));
+                };
+                if let Some(err) =
+                    check_package_dependency(self.manifest.as_ref(), context, &nested.package)
+                {
+                    return Err(err.message);
+                }
+                entry = nested;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn has_behavior_suffix(path: &Path) -> bool {
@@ -51,28 +108,14 @@ pub(crate) fn has_behavior_suffix(path: &Path) -> bool {
 }
 
 pub(crate) fn has_behavior_metadata(source: &str) -> bool {
-    if let Ok(table) = source.parse::<toml::Table>() {
-        return table
-            .get("meta")
-            .and_then(|meta| meta.get("ir"))
-            .and_then(toml::Value::as_str)
-            == Some("surv-behavior");
-    }
-    let mut in_meta = false;
-    for line in source.lines().map(str::trim) {
-        if line.starts_with('[') {
-            in_meta = line == "[meta]";
-        } else if in_meta
-            && line.split_once('=').is_some_and(|(key, value)| {
-                key.trim() == "ir"
-                    && (value.trim_start().starts_with("\"surv-behavior\"")
-                        || value.trim_start().starts_with("'surv-behavior'"))
-            })
-        {
-            return true;
-        }
-    }
-    false
+    let Ok(table) = source.parse::<toml::Table>() else {
+        return false;
+    };
+    table
+        .get("meta")
+        .and_then(|meta| meta.get("ir"))
+        .and_then(toml::Value::as_str)
+        == Some("surv-behavior")
 }
 
 pub fn looks_like_behavior(path: &Path) -> bool {
@@ -114,6 +157,8 @@ pub(super) fn load_project_context(path: Option<&Path>) -> Result<ProjectContext
             verification: BehaviorVerificationConfig::default(),
             project_ast_loaded: false,
             symbol_table: SymbolTable::default(),
+            structural: None,
+            structural_contexts: Vec::new(),
             manifest_path: None,
             diagnostics: Vec::new(),
         });
@@ -141,8 +186,11 @@ pub(super) fn load_project_context(path: Option<&Path>) -> Result<ProjectContext
                 .ok_or("paths.behavior_root must be a string")?,
         ));
     }
-    if !matches!(verification.default_backend.as_str(), "internal" | "tla+") {
-        return Err("verification.backend must be internal or tla+".into());
+    if !matches!(
+        verification.default_backend.as_str(),
+        "internal" | "tla+" | "smt"
+    ) {
+        return Err("verification.backend must be internal, smt, or tla+".into());
     }
     if verification.default_max_states == 0 {
         return Err("verification.default_max_states must be positive".into());
@@ -151,12 +199,15 @@ pub(super) fn load_project_context(path: Option<&Path>) -> Result<ProjectContext
     let mut project =
         load_project_with_manifest(&canonical_path, &manifest).map_err(|err| err.to_string())?;
     let root = canonical_path.parent().unwrap();
-    let (_, symbol_table, diagnostics) = prepare_project(&mut project, Some(&manifest), root);
+    let (structural_contexts, symbol_table, diagnostics) =
+        prepare_project(&mut project, Some(&manifest), root);
     Ok(ProjectContext {
         manifest: Some(manifest),
         verification,
         project_ast_loaded: true,
         symbol_table,
+        structural: Some(project),
+        structural_contexts,
         manifest_path: Some(canonical_path),
         diagnostics: diagnostics.into_iter().map(structural_diag).collect(),
     })

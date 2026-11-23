@@ -1,0 +1,90 @@
+[behavior.evidence]
+owner = "mod.evidence"
+terminal = "standing != 'Pending'"
+observe = ["standing"]
+
+[behavior.evidence.vars]
+standing = "enum(Pending, RecordedOnly, Attested)"
+selected_attestation = "id(schema.Attestation, attestation_A)"
+
+[behavior.evidence.init]
+standing = "Pending"
+selected_attestation = "'attestation_A'"
+
+[behavior.evidence.tables.capsules]
+schema = "schema.EvidenceCapsule"
+max_rows = 1
+fields = { id = "id(schema.EvidenceCapsule, evidence_A)", artifact = "enum(artifact_A, artifact_B)", "target.attestor" = "enum(trusted)", "target.guarantee" = "enum(Provenance)", "target.content" = "enum(statement_A, statement_B)" }
+initial = [{ id = "evidence_A", artifact = "artifact_A", "target.attestor" = "trusted", "target.guarantee" = "Provenance", "target.content" = "statement_A" }]
+
+[behavior.evidence.tables.attestations]
+schema = "schema.Attestation"
+max_rows = 1
+fields = { id = "id(schema.Attestation, attestation_A)", artifact = "enum(artifact_A, artifact_B)", attestor = "enum(trusted)", guarantee = "enum(Provenance)", content = "enum(statement_A, statement_B)", validation_ref = "id(schema.VerificationRecord, check_A, check_B)" }
+
+[behavior.evidence.tables.checks]
+schema = "schema.VerificationRecord"
+max_rows = 2
+fields = { id = "id(schema.VerificationRecord, check_A, check_B)", result = "enum(Pass)", "obligation.target.artifact" = "enum(artifact_A, artifact_B)", "obligation.target.attestor" = "enum(trusted)", "obligation.target.guarantee" = "enum(Provenance)", "obligation.target.content" = "enum(statement_A, statement_B)" }
+initial = [
+  { id = "check_A", result = "Pass", "obligation.target.artifact" = "artifact_A", "obligation.target.attestor" = "trusted", "obligation.target.guarantee" = "Provenance", "obligation.target.content" = "statement_A" },
+  { id = "check_B", result = "Pass", "obligation.target.artifact" = "artifact_A", "obligation.target.attestor" = "trusted", "obligation.target.guarantee" = "Provenance", "obligation.target.content" = "statement_B" },
+]
+
+[behavior.evidence.tables.rules]
+schema = "schema.Ruleset"
+max_rows = 1
+fields = { id = "id(schema.Ruleset, rules_A)", attestor = "enum(trusted)", guarantee = "enum(Provenance)" }
+initial = [{ id = "rules_A", attestor = "trusted", guarantee = "Provenance" }]
+
+[behavior.evidence.action.select_bound]
+ref = "func.select_attestation"
+operation = "select_attestation"
+guard = "standing == 'Pending' and attestations[selected_attestation] == None"
+args = { evidence = { type = "id(schema.EvidenceCapsule, evidence_A)", value = "evidence_A" }, content = { type = "enum(statement_A, statement_B)", value = "statement_A" }, attestor = { type = "enum(trusted)", value = "trusted" }, guarantee = { type = "enum(Provenance)", value = "Provenance" }, verification = { type = "id(schema.VerificationRecord, check_A, check_B)", value = "check_A" } }
+insert.attestations = [{ id = "selected_attestation", artifact = "capsules[evidence].artifact", attestor = "attestor", guarantee = "guarantee", content = "content", validation_ref = "verification" }]
+
+[behavior.evidence.action.select_unrelated]
+ref = "func.select_attestation"
+operation = "select_attestation"
+guard = "standing == 'Pending' and attestations[selected_attestation] == None"
+args = { evidence = { type = "id(schema.EvidenceCapsule, evidence_A)", value = "evidence_A" }, content = { type = "enum(statement_A, statement_B)", value = "statement_A" }, attestor = { type = "enum(trusted)", value = "trusted" }, guarantee = { type = "enum(Provenance)", value = "Provenance" }, verification = { type = "id(schema.VerificationRecord, check_A, check_B)", value = "check_B" } }
+insert.attestations = [{ id = "selected_attestation", artifact = "capsules[evidence].artifact", attestor = "attestor", guarantee = "guarantee", content = "content", validation_ref = "verification" }]
+
+[behavior.evidence.action.evaluate_evidence]
+ref = "func.evaluate_evidence"
+guard = "standing == 'Pending' and attestations[selected_attestation] != None"
+args = { evidence = { type = "id(schema.EvidenceCapsule, evidence_A)", value = "evidence_A" } }
+update.standing = """
+if exists a in attestations.values:
+  a.id == selected_attestation
+  and a.artifact == capsules[evidence].artifact
+  and (exists r in rules.values: r.attestor == a.attestor and r.guarantee == a.guarantee)
+  and (exists v in checks.values:
+    v.id == a.validation_ref and v.result == 'Pass'
+    and v.obligation.target.artifact == a.artifact
+    and v.obligation.target.attestor == a.attestor
+    and v.obligation.target.guarantee == a.guarantee
+    and v.obligation.target.content == a.content)
+then 'Attested' else 'RecordedOnly'
+"""
+
+[behavior.evidence.invariant.attested_has_bound_verification]
+expr = """
+forall e in capsules.values:
+  standing == 'Attested' implies
+    exists a in attestations.values:
+      a.id == selected_attestation and a.artifact == e.artifact
+      and exists v in checks.values:
+        v.id == a.validation_ref and v.result == 'Pass'
+        and v.obligation.target.artifact == a.artifact
+        and v.obligation.target.attestor == a.attestor
+        and v.obligation.target.guarantee == a.guarantee
+        and v.obligation.target.content == a.content
+"""
+
+[behavior.evidence.reach.bound_is_attested]
+expr = "standing == 'Attested' and attestations[selected_attestation].validation_ref == 'check_A'"
+
+[behavior.evidence.reach.unrelated_is_recorded_only]
+expr = "standing == 'RecordedOnly' and attestations[selected_attestation].validation_ref == 'check_B'"

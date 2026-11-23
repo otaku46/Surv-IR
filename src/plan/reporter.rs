@@ -15,8 +15,10 @@ pub struct PlanReport {
     pub total_symbols: usize,
     pub done_symbols: usize,
     pub drifted_symbols: usize,
+    pub unverified_symbols: usize,
     pub ready_unit_count: usize,
     pub blocked_unit_count: usize,
+    pub unverified_unit_count: usize,
     pub waves: Vec<PlanWave>,
     pub parallel_tracks: Vec<ParallelTrack>,
     pub module_summaries: Vec<ModulePlanSummary>,
@@ -35,8 +37,10 @@ impl PlanReport {
             total_symbols: 0,
             done_symbols: 0,
             drifted_symbols: 0,
+            unverified_symbols: 0,
             ready_unit_count: 0,
             blocked_unit_count: 0,
+            unverified_unit_count: 0,
             waves: Vec::new(),
             parallel_tracks: Vec::new(),
             module_summaries: Vec::new(),
@@ -66,10 +70,12 @@ impl PlanReport {
             self.total_symbols += 1;
             self.done_symbols += usize::from(status.impl_state == ImplState::Done);
             self.drifted_symbols += usize::from(status.impl_state == ImplState::Drifted);
+            self.unverified_symbols += usize::from(status.impl_state == ImplState::Unverified);
         }
         for unit in self.waves.iter().flat_map(|wave| &wave.units) {
             self.ready_unit_count += usize::from(unit.readiness == Readiness::Ready);
             self.blocked_unit_count += usize::from(unit.readiness == Readiness::Blocked);
+            self.unverified_unit_count += usize::from(unit.readiness == Readiness::Unverified);
         }
         self.formatted_output = self.render(format == "md");
         self
@@ -97,12 +103,14 @@ impl PlanReport {
         };
         writeln!(
             text,
-            "\n{mode}. Symbols: {}/{} done, {} drifted. Units: {} ready, {} blocked.",
+            "\n{mode}. Symbols: {}/{} done, {} drifted, {} unverified. Units: {} ready, {} blocked, {} unverified.",
             self.done_symbols,
             self.total_symbols,
             self.drifted_symbols,
+            self.unverified_symbols,
             self.ready_unit_count,
             self.blocked_unit_count,
+            self.unverified_unit_count,
         )
         .unwrap();
 
@@ -139,6 +147,10 @@ impl PlanReport {
                     .unwrap();
                     for drift in &status.drift_problems {
                         writeln!(text, "  - {}: {drift}", member.display_ref).unwrap();
+                    }
+                    for problem in &status.unverified_problems {
+                        writeln!(text, "  - {}: unverified: {problem}", member.display_ref)
+                            .unwrap();
                     }
                 }
                 if !item.blocked_by_units.is_empty() {

@@ -35,6 +35,7 @@ pub struct NodeImplStatus {
     pub impl_state: ImplState,
     pub matched_location: Option<String>,
     pub drift_problems: Vec<String>,
+    pub unverified_problems: Vec<String>,
     pub candidate_count: usize,
     pub is_module: bool,
 }
@@ -70,6 +71,7 @@ pub fn apply_design_only_overlay(
                 impl_state: ImplState::Unverified,
                 matched_location: None,
                 drift_problems: Vec::new(),
+                unverified_problems: Vec::new(),
                 candidate_count: 0,
                 is_module: node.node_kind == "mod",
             });
@@ -132,6 +134,7 @@ pub fn apply_workspace_diff_overlay(
                     impl_state,
                     matched_location: None,
                     drift_problems: Vec::new(),
+                    unverified_problems: Vec::new(),
                     candidate_count: 0,
                     is_module: node.node_kind == "mod",
                 },
@@ -159,12 +162,18 @@ pub fn apply_workspace_diff_overlay(
         .cloned()
         .collect();
 
+    let type_map = context
+        .manifest
+        .as_ref()
+        .map(|manifest| manifest.diff.type_map.clone())
+        .unwrap_or_default();
     let diff_result = diff_expected_symbols(
         &expected,
         workspace,
         &context.request.lang,
         &context.request.strategy,
         context.request.mapping_path.as_deref(),
+        &type_map,
         true,
     );
 
@@ -220,6 +229,16 @@ pub fn apply_workspace_diff_overlay(
         if let Some(status) = expected_sym.stable_id.and_then(|id| statuses.get_mut(&id)) {
             status.impl_state = ImplState::Drifted;
             status.drift_problems.extend(problems);
+        }
+    }
+    for verification in diff.unverified {
+        if let Some(status) = verification
+            .expected
+            .stable_id
+            .and_then(|id| statuses.get_mut(&id))
+        {
+            status.impl_state = ImplState::Unverified;
+            status.unverified_problems.extend(verification.problems);
         }
     }
 
